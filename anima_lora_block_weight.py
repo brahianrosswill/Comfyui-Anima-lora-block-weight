@@ -1,5 +1,5 @@
 """
-Anima LoRA Block Weight (Pro) — 逐 block 精细控制升级版
+Anima LoRA Block Weight — 分层加载（三档 + 逐 block）
 ======================================================
 在三档版（shallow/middle/deep）基础上，新增「逐 block 模式」：
 可以对 0..27 每一个 block 单独设权重，用于精确定位每个 block 的作用、
@@ -14,7 +14,7 @@ Anima LoRA Block Weight (Pro) — 逐 block 精细控制升级版
 
 放置方法：和原节点相同。可与原节点共存（类名不同）。
   ComfyUI/custom_nodes/某文件夹/__init__.py
-  重启后在 loaders 分类下出现 "Anima LoRA Block Weight (Pro)"。
+  重启后在 loaders 分类下出现 "Anima LoRA Block Weight"。
 """
 
 import os
@@ -134,9 +134,9 @@ def parse_per_block_weights(spec: str, total_blocks: int, default: float):
     return weights
 
 
-class AnimaLoRABlockWeightPro:
+class AnimaLoRABlockWeight:
     """
-    Anima LoRA 分层加载器（Pro）。支持逐 block 控制。
+    Anima LoRA 分层加载器。支持三档与逐 block 两种控制模式。
 
     最终缩放系数 = block权重 × 类型系数
       - grouped  模式：block权重来自 shallow/middle/deep 三档
@@ -221,7 +221,7 @@ class AnimaLoRABlockWeightPro:
         total_blocks = max_block + 1 if max_block >= 0 else 0
 
         if total_blocks == 0:
-            info = ("[AnimaLBW-Pro] 未检测到 blocks_N 结构，可能不是 Anima LoRA。"
+            info = ("[AnimaLBW] 未检测到 blocks_N 结构，可能不是 Anima LoRA。"
                     "已按普通方式加载，未做分层。")
             print(info)
             m_out, c_out = comfy.sd.load_lora_for_models(
@@ -279,7 +279,7 @@ class AnimaLoRABlockWeightPro:
             model, clip, weighted, strength_model, strength_clip)
 
         info_lines = [
-            f"[AnimaLBW-Pro] {os.path.basename(lora_path)} | mode={control_mode}",
+            f"[AnimaLBW] {os.path.basename(lora_path)} | mode={control_mode}",
             f"total_blocks={total_blocks}, scaled_tensors={applied}",
             "block_weights=" + ",".join(f"{w:g}" for w in block_w),
             f"types: self_attn={w_self_attn} cross_attn={w_cross_attn} "
@@ -293,5 +293,5 @@ class AnimaLoRABlockWeightPro:
         return (m_out, c_out, info)
 
 
-NODE_CLASS_MAPPINGS = {"AnimaLoRABlockWeightPro": AnimaLoRABlockWeightPro}
-NODE_DISPLAY_NAME_MAPPINGS = {"AnimaLoRABlockWeightPro": "Anima LoRA Block Weight (Pro)"}
+NODE_CLASS_MAPPINGS = {"AnimaLoRABlockWeight": AnimaLoRABlockWeight}
+NODE_DISPLAY_NAME_MAPPINGS = {"AnimaLoRABlockWeight": "Anima LoRA Block Weight"}
