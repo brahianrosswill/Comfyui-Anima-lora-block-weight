@@ -30,16 +30,33 @@ Includes two nodes (menu category `loaders`):
 
 ## Installation
 
-Place this repo into ComfyUI's custom_nodes directory, with `__init__.py` directly at that level:
+### Option 1: git clone (recommended)
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/rom0718/Anima-lora-block-weight.git
+```
+
+### Option 2: manual download
+
+Download this repo as a zip, extract into `ComfyUI/custom_nodes/`, with `__init__.py` directly at that level:
 
 ```
-ComfyUI/custom_nodes/anima-lora-block-weight/
+ComfyUI/custom_nodes/Anima-lora-block-weight/
     ├── __init__.py
-    ├── anima_lora_block_weight.py            # loader node: runtime layering
-    └── anima_lora_block_weight_export.py     # export node: bake to file
+    ├── anima_lora_block_weight_v2.py         # loader node: four-segment / per-block sliders + impact coloring
+    ├── anima_lora_block_weight_export.py     # export node: bake to file
+    ├── web/
+    │   └── anima_block_weight.js             # frontend panel (sliders / coloring / EN-ZH switch)
+    └── experimental/                          # optional: LoKr experimental branch
 ```
 
-Restart ComfyUI; find both nodes under `loaders`. No third-party dependencies.
+Both options require: **restart ComfyUI**, then **hard-refresh the browser (Ctrl+Shift+R)** to clear the
+frontend cache (after updating a node with frontend JS, the cache must be cleared or the old JS may persist).
+
+After restart, find the nodes under `loaders`. No third-party dependencies.
+
+> Update: `cd ComfyUI/custom_nodes/Anima-lora-block-weight && git pull`, then restart + hard-refresh.
 
 ---
 
@@ -51,27 +68,32 @@ Final scale factor per weight tensor:
 factor = block_weight × submodule_type_weight
 ```
 
-- **block_weight**: from shallow / middle / deep tiers in `grouped` mode; per-block from `block_weights` in `per_block` mode.
+- **block_weight**: in `grouped` mode, from the four measured segments (motion / proportion / core / detail);
+  in `per_block` mode, from each block's own slider (blk00–blk27).
 - **submodule type weights**: self_attn / cross_attn / mlp / adaln, each a multiplier, active in both modes.
 - `.alpha` tensors are not scaled (scaling up/down already changes the contribution).
 
-### Roles of stages and submodules
+### Measured functional map (this is the V2 default, from real ablation)
 
-| Dimension | Value | Role |
-|-----------|-------|------|
-| Depth · shallow | block 0–8 | Global composition, pose, skeleton, proportions |
-| Depth · middle | block 9–18 | Subject form, semantic transition |
-| Depth · deep | block 19–27 | Style, brushwork, texture, coloring |
-| Type · self_attn | `w_self_attn` | Internal spatial structure, composition, anatomy |
-| Type · cross_attn | `w_cross_attn` | Text→image mapping, prompt response |
-| Type · mlp | `w_mlp` | Style, texture, look features |
-| Type · adaln | `w_adaln` | DiT adaptive norm modulation, overall tone |
+Unlike the generic DiT rule of thumb, V2's segments come from fixed-seed single-variable ablation on real
+Anima style LoRAs (see the case study below). Note these are **tendencies with cross-talk between segments**,
+not clean separations — each segment is really a "prior-obedience knob," not a dedicated brush.
 
-> ⚠️ **The mapping above is a general DiT rule of thumb, not universal across LoRAs.** Measurements show
-> that some Anima LoRAs deviate substantially from this default table (e.g. mlp turning out to govern anatomy,
-> the middle stage becoming the dense-information layer, etc.). Use per_block mode to scan and locate your
-> own LoRA's true boundaries (see "Scanning method"). A complete case study is included below under
-> "Case study: Real functional map of an Anima LoRA".
+| Dimension | Value | Measured tendency |
+|-----------|-------|-------------------|
+| seg_motion | block 0–11 | Prompt-obedience of motion / overall body size |
+| seg_proportion | block 12–14 | Prior-obedience of body proportion / stockiness |
+| seg_core | block 15–18 | LoRA core expression (anatomy + proportion + material; highest info density) |
+| seg_detail | block 19–27 | Global refinement (saturation / purity and other surface attributes) |
+| Type · self_attn | `w_self_attn` | Detail content + some anatomy + some style |
+| Type · cross_attn | `w_cross_attn` | Least effect on style — safest for fine tuning |
+| Type · mlp | `w_mlp` | Largest effect on anatomy (also carries style) |
+| Type · adaln | `w_adaln` | Holistic effect, no single direction |
+
+> ⚠️ **These tendencies were verified on style LoRAs and appear to be architecture-level (consistent across
+> three very different LoRAs), but your specific LoRA may differ.** The built-in **impact coloring** (per_block
+> panel) computes each block's weight L2 norm so you can see your LoRA's real hot blocks at a glance; use
+> per_block mode to scan and confirm (see "Scanning method"). Full details under "Case study" below.
 
 ---
 
@@ -93,9 +115,7 @@ Switch via `control_mode`:
     highest information density)
   - `seg_detail` (default 19-27): global refinement
 - **per_block (sliders)**: one slider per block (28 total). With the frontend JS installed, this renders as
-  a compact panel (checkbox toggle + slider + number box + impact coloring); without the JS it degrades to
-  28 native sliders that still work fully ("native controls as the base, JS as the skin" — a robust design
-  where JS failure never breaks generation).
+  a compact panel (checkbox toggle + slider + number box + impact coloring).
 
 ### Impact coloring
 
@@ -111,6 +131,24 @@ Notes:
   differences show even when absolute norms are close; the trade-off is it expresses "relative importance
   within this LoRA," not absolute strength.
 - You must **generate once** before the node sends impact data to the frontend for coloring.
+
+### About the frontend JS and "native fallback"
+
+All controls (strength, the four segments, w_, verbose, per-block) are ComfyUI **native widgets** underneath;
+the frontend JS merely hides them and redraws a unified compact panel ("native controls as the base, JS as
+the skin"). On a normal install, the JS file (`web/anima_block_weight.js`) loads automatically with the node,
+so you see the compact panel.
+
+**If the JS fails to load** (stale browser cache, missing file, incompatible frontend version), the node falls
+back to **all native controls laid out directly**: strength / the four segment ranges and weights / w_ /
+verbose / the 28 blk sliders all show **at once** (no longer auto-hiding irrelevant items by mode). The node
+gets long and unpolished — but it is **fully functional**: all values pass through correctly and generation
+works; you only lose the compact layout, coloring, and mode-based hiding.
+
+If you see a pile of scattered native sliders instead of the compact panel:
+1. **Hard-refresh the browser (Ctrl+Shift+R)** first (stale frontend cache is the most common cause);
+2. If that fails, confirm `custom_nodes/Anima-lora-block-weight/web/anima_block_weight.js` exists;
+3. Open the browser console (F12) and check for related errors.
 
 ### Parameters
 
@@ -231,10 +269,10 @@ per shot, others kept at 1.0, each compared against the all-1.0 baseline.
 | Goal | Configuration |
 |------|---------------|
 | Reduce anatomy, accept some style loss | `w_mlp=0.7`, others 1.0 |
-| Large overhaul, soften the overall look | `middle_weight=0.5-0.7`, others 1.0 |
+| Large overhaul, soften the overall look | `seg_core_weight=0.5-0.7`, others 1.0 |
 | Tiny detail tweaks with style nearly intact | `w_cross_attn=0.7`, others 1.0 |
 | Preserve the LoRA's signature look | All 1.0; use prompts / negatives to adjust specific elements |
-| Reduce motion exaggeration while keeping body type | `shallow_weight=0.5-0.7`, others 1.0 |
+| Reduce motion exaggeration while keeping body type | `seg_motion_weight=0.5-0.7`, others 1.0 |
 
 ### Important practical conclusion
 
