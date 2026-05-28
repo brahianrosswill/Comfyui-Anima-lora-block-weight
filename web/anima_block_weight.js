@@ -350,8 +350,26 @@ function segImpact(node, blocksName, impact) {
 function applyImpact(node, impact) {
   if (!Array.isArray(impact)) return;
   node._impact = impact;
+  // 持久化：impact 是运行时数据，默认不会存进工作流。存进 properties 后，
+  // 刷新页面 / 重载工作流 / 复制节点都能恢复染色——否则一旦 ComfyUI 因输入未变
+  // 跳过本节点执行（不再下发 block_impact），染色就再也回不来（刷新也救不回）。
+  try {
+    if (impact.length) {
+      node.properties = node.properties || {};
+      node.properties.anima_block_impact = impact;
+    }
+  } catch (e) {}
   if (node._pbRows) node._pbRows.forEach((r, i) => r.setColor(impact[i]));
   if (node._segRows) node._segRows.forEach((r) => r.setColor(segImpact(node, r.blocksName, impact)));
+}
+// 若运行时 _impact 丢失（刷新/重建节点导致），尝试从持久化的 properties 取回。
+function restoreImpact(node) {
+  if (node._impact && node._impact.length) return node._impact;
+  try {
+    const saved = node.properties && node.properties.anima_block_impact;
+    if (Array.isArray(saved) && saved.length) { node._impact = saved; return saved; }
+  } catch (e) {}
+  return null;
 }
 function refreshAll(node) {
   node._strRows?.forEach((r) => r.sync());
@@ -380,10 +398,10 @@ function toggleMode(node) {
   if (node._segSep) node._segSep.style.display = isPB ? "none" : "block";
   if (node._pbGroup) node._pbGroup.style.display = isPB ? "flex" : "none";
 
-  node._applyImpactAgain = () => { if (node._impact) applyImpact(node, node._impact); };
+  node._applyImpactAgain = () => { const imp = restoreImpact(node); if (imp) applyImpact(node, imp); };
 
   refreshAll(node);
-  if (node._impact) applyImpact(node, node._impact);
+  { const imp = restoreImpact(node); if (imp) applyImpact(node, imp); }
 
   // computeSize 返回的是【最小】高度；setSize 设【当前】高度。
   // grouped：当前=最小（精确贴合内容）。
