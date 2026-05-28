@@ -125,47 +125,47 @@ class AnimaLoRABlockWeightExport:
     @classmethod
     def INPUT_TYPES(cls):
         lora_list = folder_paths.get_filename_list("loras")
-        return {
-            "required": {
-                "lora_name": (lora_list,),
-                "output_name": ("STRING", {"default": "anima_lora_baked"}),
-                "save_to": (["output", "loras"], {"default": "loras"}),
+        req = {
+            "lora_name": (lora_list,),
+            "output_name": ("STRING", {"default": "anima_lora_baked"}),
+            "save_to": (["output", "loras"], {"default": "loras"}),
 
-                "control_mode": (["grouped", "per_block"], {"default": "grouped"}),
+            "control_mode": (["grouped", "per_block"], {"default": "grouped"}),
 
-                "shallow_blocks": ("STRING", {"default": "0-8"}),
-                "shallow_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "middle_blocks": ("STRING", {"default": "9-18"}),
-                "middle_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "deep_blocks": ("STRING", {"default": "19-27"}),
-                "deep_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "seg_motion_blocks": ("STRING", {"default": "0-11"}),
+            "seg_motion_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "seg_proportion_blocks": ("STRING", {"default": "12-14"}),
+            "seg_proportion_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "seg_core_blocks": ("STRING", {"default": "15-18"}),
+            "seg_core_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "seg_detail_blocks": ("STRING", {"default": "19-27"}),
+            "seg_detail_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
 
-                "block_weights": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "placeholder": "per_block模式用。纯序列/索引:值/区间:值，见说明书",
-                }),
-
-                "w_self_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "w_cross_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "w_mlp": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "w_adaln": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "default_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "overwrite": ("BOOLEAN", {"default": False}),
-            }
+            "w_self_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "w_cross_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "w_mlp": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "w_adaln": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "overwrite": ("BOOLEAN", {"default": False}),
         }
+        for i in range(28):
+            req[f"blk{i:02d}"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01})
+        return {"required": req}
 
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("saved_path",)
     FUNCTION = "export"
     CATEGORY = "loaders"
     OUTPUT_NODE = True
-    DESCRIPTION = "把分层缩放烘焙进新的 Anima LoRA 文件，供普通 Loader 直接加载。"
+    DESCRIPTION = ("Bake layered scaling into a new Anima LoRA file for any plain Loader. | "
+                   "把分层缩放烘焙进新的 Anima LoRA 文件，供普通 Loader 直接加载。")
 
     def export(self, lora_name, output_name, save_to, control_mode,
-               shallow_blocks, shallow_weight, middle_blocks, middle_weight,
-               deep_blocks, deep_weight, block_weights, w_self_attn,
-               w_cross_attn, w_mlp, w_adaln, default_weight, overwrite):
+               seg_motion_blocks, seg_motion_weight,
+               seg_proportion_blocks, seg_proportion_weight,
+               seg_core_blocks, seg_core_weight,
+               seg_detail_blocks, seg_detail_weight,
+               w_self_attn, w_cross_attn, w_mlp, w_adaln, overwrite,
+               **block_kwargs):
 
         lora_path = folder_paths.get_full_path("loras", lora_name)
         raw = comfy.utils.load_torch_file(lora_path, safe_load=True)
@@ -195,21 +195,27 @@ class AnimaLoRABlockWeightExport:
 
         # 每 block 权重
         if control_mode == "per_block":
-            block_w = parse_per_block_weights(block_weights, total_blocks, default_weight)
-        else:
-            ss = parse_block_range(shallow_blocks, total_blocks)
-            ms = parse_block_range(middle_blocks, total_blocks)
-            ds = parse_block_range(deep_blocks, total_blocks)
             block_w = []
             for i in range(total_blocks):
-                if i in ds:
-                    block_w.append(deep_weight)
-                elif i in ms:
-                    block_w.append(middle_weight)
-                elif i in ss:
-                    block_w.append(shallow_weight)
-                else:
-                    block_w.append(default_weight)
+                v = block_kwargs.get(f"blk{i:02d}", 1.0)
+                try:
+                    block_w.append(float(v))
+                except (ValueError, TypeError):
+                    block_w.append(1.0)
+        else:  # grouped 四段
+            segs = [
+                (parse_block_range(seg_detail_blocks, total_blocks), seg_detail_weight),
+                (parse_block_range(seg_core_blocks, total_blocks), seg_core_weight),
+                (parse_block_range(seg_proportion_blocks, total_blocks), seg_proportion_weight),
+                (parse_block_range(seg_motion_blocks, total_blocks), seg_motion_weight),
+            ]
+            block_w = []
+            for i in range(total_blocks):
+                val = 1.0
+                for sset, sw in segs:
+                    if i in sset:
+                        val = sw
+                block_w.append(val)
 
         type_weight = {
             "self_attn": w_self_attn, "cross_attn": w_cross_attn,
@@ -269,4 +275,4 @@ class AnimaLoRABlockWeightExport:
 
 
 NODE_CLASS_MAPPINGS = {"AnimaLoRABlockWeightExport": AnimaLoRABlockWeightExport}
-NODE_DISPLAY_NAME_MAPPINGS = {"AnimaLoRABlockWeightExport": "Anima LoRA Block Weight Export"}
+NODE_DISPLAY_NAME_MAPPINGS = {"AnimaLoRABlockWeightExport": "Anima LoRA Block Weight Export V2"}

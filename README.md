@@ -1,5 +1,15 @@
 # Anima LoRA Block Weight
 
+> **About this project**: This plugin was developed by **Claude (Anthropic's AI)** after simple testing
+> and in-depth discussion with me — I did not write it myself. The functional map, layering logic, and
+> code were all produced by Claude; I provided real-world testing, experimental data, and feedback.
+> The UI design references
+> [comfyUI-Realtime-Lora](https://github.com/shootthesound/comfyUI-Realtime-Lora)
+> (the per-layer sliders + impact-coloring interaction). Stated here to avoid confusion or ambiguity.
+>
+> **Interface language**: Node UI text (buttons, tooltips) switches automatically between English and Chinese
+> based on ComfyUI's language setting (`Comfy > Locale`); backend descriptions are bilingual (EN | ZH).
+
 A ComfyUI node providing block-weight layering for LoRAs of **Anima** (NVIDIA Cosmos architecture, 2B anime model).
 **Supports both runtime tuning and bake-to-file export**: adjust per-layer strength live during generation,
 or freeze a tuned layering into a new LoRA file.
@@ -57,14 +67,50 @@ factor = block_weight × submodule_type_weight
 | Type · mlp | `w_mlp` | Style, texture, look features |
 | Type · adaln | `w_adaln` | DiT adaptive norm modulation, overall tone |
 
-> The block ranges are general DiT rules of thumb, not measured for any specific LoRA. Use per_block mode
-> to scan and locate your own LoRA's true boundaries (see "Scanning method").
+> ⚠️ **The mapping above is a general DiT rule of thumb, not universal across LoRAs.** Measurements show
+> that some Anima LoRAs deviate substantially from this default table (e.g. mlp turning out to govern anatomy,
+> the middle stage becoming the dense-information layer, etc.). Use per_block mode to scan and locate your
+> own LoRA's true boundaries (see "Scanning method"). A complete case study is included below under
+> "Case study: Real functional map of an Anima LoRA".
 
 ---
 
-## Loader node: Anima LoRA Block Weight
+## Loader node: Anima LoRA Block Weight V2
 
-Runtime layering, live, for tuning and everyday use.
+Runtime layering, live. Provides a **measurement-based four-segment split**, a **graphical per-block
+slider panel**, and **impact coloring**. (The old V1 loader node has been removed; download a historical
+release of this repo if you need it.)
+
+### Three control modes
+
+Switch via `control_mode`:
+
+- **grouped (four segments, default)**: four segments based on the measured functional map, each range
+  customizable:
+  - `seg_motion` (default 0-11): prompt-obedience of motion / overall body size
+  - `seg_proportion` (default 12-14): prior-obedience of body proportion / stockiness
+  - `seg_core` (default 15-18): the LoRA's core expression segment (anatomy + proportion + material,
+    highest information density)
+  - `seg_detail` (default 19-27): global refinement
+- **per_block (sliders)**: one slider per block (28 total). With the frontend JS installed, this renders as
+  a compact panel (checkbox toggle + slider + number box + impact coloring); without the JS it degrades to
+  28 native sliders that still work fully ("native controls as the base, JS as the skin" — a robust design
+  where JS failure never breaks generation).
+
+### Impact coloring
+
+In the per_block panel, each row's checkbox and row background are colored by that block's **impact score**
+(blue=low → cyan → yellow → red=high). Impact is computed at runtime from each block's LoRA weight L2 norm,
+contrast-stretched into a color, so you can see at a glance **which blocks matter most in this LoRA**.
+
+Notes:
+- Impact reflects the LoRA's **intrinsic "information density"** — a relative ranking that **does not change
+  when you adjust sliders** (sliders are weights you apply; impact is a property of the LoRA; they are
+  independent).
+- Coloring uses **contrast stretch** (maps this LoRA's [weakest, strongest] to [blue, red]), so relative
+  differences show even when absolute norms are close; the trade-off is it expresses "relative importance
+  within this LoRA," not absolute strength.
+- You must **generate once** before the node sends impact data to the frontend for coloring.
 
 ### Parameters
 
@@ -72,46 +118,31 @@ Runtime layering, live, for tuning and everyday use.
 |-----------|------|---------|-------------|
 | model / clip | — | — | Model and CLIP inputs |
 | lora_name | dropdown | — | LoRA file to load |
-| strength_model | float | 1.0 | Overall LoRA strength on model |
-| strength_clip | float | 1.0 | Overall LoRA strength on CLIP |
-| control_mode | enum | grouped | `grouped` tiers / `per_block` per-block |
-| shallow_blocks / _weight | str / float | "0-8" / 1.0 | Shallow range & factor (grouped) |
-| middle_blocks / _weight | str / float | "9-18" / 1.0 | Middle range & factor (grouped) |
-| deep_blocks / _weight | str / float | "19-27" / 1.0 | Deep range & factor (grouped) |
-| block_weights | multiline | "" | Per-block weights (per_block) |
+| strength_model / strength_clip | float | 1.0 | Overall LoRA strength on model / CLIP |
+| control_mode | enum | grouped | `grouped` four-segment / `per_block` sliders |
+| seg_motion_blocks / _weight | str / float | "0-11" / 1.0 | Motion segment range & factor |
+| seg_proportion_blocks / _weight | str / float | "12-14" / 1.0 | Proportion segment range & factor |
+| seg_core_blocks / _weight | str / float | "15-18" / 1.0 | Core segment range & factor |
+| seg_detail_blocks / _weight | str / float | "19-27" / 1.0 | Detail segment range & factor |
+| blk00 … blk27 | float | 1.0 | Per-block factors (per_block; JS beautifies into a panel) |
 | w_self_attn / w_cross_attn / w_mlp / w_adaln | float | 1.0 | Submodule type factors |
-| default_weight | float | 1.0 | Factor for unspecified blocks |
 | verbose | bool | false | Print per-block factors to console |
 
 With all factors at the default 1.0, behavior equals a plain LoRA Loader.
 
-### per_block syntax
+### Common recipes (grouped four segments)
 
-Three forms, mixable (comma / newline / semicolon as separators), later overrides earlier:
-
-```
-plain sequence:  1,1,0.5,0.5            # maps to block 0,1,2,3...; pad with default
-index:value:     5:0.3, 27:1.2          # only blocks 5 and 27
-range:value:     0-8:0.3, 19-27:1.0     # set ranges in bulk
-mixed:           0-27:1.0, 12:0, 13:0   # all 1.0, then turn off 12 and 13
-```
-
-Range syntax (shallow/middle/deep_blocks) accepts `all` / `0-8` / `0,3,5` / `0-8,19-27`.
-On overlap, priority is deep > middle > shallow.
-
-### Common recipes
-
-| Goal | shallow | middle | deep | type weights |
-|------|---------|--------|------|--------------|
-| Keep style, weaken composition/anatomy | 0.3 | 0.7 | 1.0 | all 1.0 |
-| Keep composition/anatomy, weaken style | 1.0 | 0.7 | 0.3 | all 1.0 |
-| Reduce body type/anatomy only | 1.0 | 1.0 | 1.0 | w_self_attn=0.5 |
-| Counter prompt-hijacking/concept pollution | 1.0 | 1.0 | 1.0 | w_cross_attn=0.5 |
-| Strengthen style | 1.0 | 1.0 | 1.0 | w_mlp=1.2 |
+| Goal | motion | proportion | core | detail | type weights |
+|------|--------|------------|------|--------|--------------|
+| Make body size follow the prompt more | 0.5 | 1.0 | 1.0 | 1.0 | all 1.0 |
+| Lock proportion against prompt | 1.0 | tune this (lower = more prior) | 1.0 | 1.0 | all 1.0 |
+| Large overhaul, soften the look | 1.0 | 1.0 | 0.5-0.7 | 1.0 | all 1.0 |
+| Reduce anatomy only (accept some style loss) | 1.0 | 1.0 | 1.0 | 1.0 | w_mlp=0.7 |
+| Counter prompt-hijacking / concept pollution | 1.0 | 1.0 | 1.0 | 1.0 | w_cross_attn=0.5 |
 
 ---
 
-## Export node: Anima LoRA Block Weight Export
+## Export node: Anima LoRA Block Weight Export V2
 
 Bakes the layering into a new `.safetensors`. Complementary to the loader node: the loader is for tuning and
 produces no file; the export node freezes the same scaling into a finished file, loadable by any plain LoRA Loader.
@@ -156,6 +187,74 @@ per_block mode can map your LoRA's functions:
 
 Tuning tips: change one set of knobs at a time with a fixed seed; explore mainly within 0.0–1.0 (>1.0 risks
 artifacts, max 2.0); enable verbose to confirm applied values.
+
+---
+
+## Case study: Real functional map of an Anima LoRA
+
+To illustrate that "the default table is only a starting point," this section records one complete scanning run.
+**Results apply only to the LoRA tested**, but they reflect a general pattern: on the Anima/Cosmos architecture,
+multiple theoretical defaults may be systematically shifted. Scan your own LoRA to verify.
+
+### Method
+
+Control variables: fixed seed / prompt / sampler / steps / CFG; all other LoRAs disabled. One knob is changed
+per shot, others kept at 1.0, each compared against the all-1.0 baseline.
+
+### Results
+
+**By block depth**
+
+| Stage | Observed role | Theoretical default |
+|-------|---------------|---------------------|
+| shallow 0-8 | Motion consistency: hand gestures, facial expression, toe orientation and other micro-behaviors | Composition / anatomy ❌ |
+| **middle 9-18** | **Dense-information layer: anatomy + most of the style + part of the composition** | Transition ❌ |
+| deep 19-27 | Minor style details / brushwork | Main style ❌ |
+
+**By submodule type**
+
+| Knob | Observed role | Theoretical default |
+|------|---------------|---------------------|
+| `w_self_attn` | Detail content + minor anatomy + minor style | Anatomy / pose ❌ |
+| **`w_mlp`** | **Largest effect on anatomy; also affects style** (strongest single-dimension knob) | Style ❌ |
+| `w_cross_attn` | Smallest effect on style; light detail tweaks (safe micro-adjust) | Prompt response ⚠ |
+| `w_adaln` | Global influence: all dimensions shift; no specific direction | Overall tone ✓ |
+
+> Counter-intuitive finding: `w_mlp` is the strongest anatomy knob on this LoRA, while `w_self_attn` has
+> only minor effect on anatomy — the opposite of the "self_attn governs spatial structure" rule of thumb.
+> This is explainable from training-data distribution: when anatomy and style are jointly trained into the
+> same block range and the same submodule type (here, the mlp of the middle stage), adjusting mlp will
+> shift both at once.
+
+### Recipes derived from this map
+
+| Goal | Configuration |
+|------|---------------|
+| Reduce anatomy, accept some style loss | `w_mlp=0.7`, others 1.0 |
+| Large overhaul, soften the overall look | `middle_weight=0.5-0.7`, others 1.0 |
+| Tiny detail tweaks with style nearly intact | `w_cross_attn=0.7`, others 1.0 |
+| Preserve the LoRA's signature look | All 1.0; use prompts / negatives to adjust specific elements |
+| Reduce motion exaggeration while keeping body type | `shallow_weight=0.5-0.7`, others 1.0 |
+
+### Important practical conclusion
+
+On this LoRA, **fully separating style from anatomy is not achievable** — they are physically trained into
+the same range (middle) and the same submodule type (mlp). This is a property of the LoRA's training, not a
+limitation of the node. The right strategy is not to seek clean separation but to find an **acceptable
+trade-off** (e.g. a sweet spot at ~60% anatomy reduction with ~20% style loss).
+
+### Notes for other Anima LoRA users
+
+The map above is **not a universal Anima configuration** — every LoRA differs. But compared to the DiT
+defaults, it may be closer to how Anima-architecture LoRAs actually behave, and can serve as a
+**priority hypothesis** during scanning:
+
+- Suspect first that middle is the dense-information layer (rather than shallow)
+- Suspect first that mlp and self_attn may swap roles vs. the DiT rule of thumb
+- `w_adaln` typically has no specific direction; keep at 1.0 first
+- `w_cross_attn` is typically the safest light-touch knob
+
+You should still run the scanning method yourself for a precise map of your own LoRA.
 
 ---
 
