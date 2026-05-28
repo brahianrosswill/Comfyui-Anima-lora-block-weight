@@ -23,7 +23,13 @@
 
 import { app } from "../../scripts/app.js";
 
-const NODE_NAMES = ["AnimaLoRABlockWeightV2", "AnimaLoRABlockWeightExport"];
+const NODE_NAMES = [
+  "AnimaLoRABlockWeightV2",
+  "AnimaLoRABlockWeightExport",
+  // 实验性 LoKr 分支（已对齐 V2 参数体系，复用同一面板；缺失的 widget 会自动跳过）
+  "AnimaLoKrBlockWeightExperimental",
+  "AnimaLoKrBlockWeightExportExperimental",
+];
 const TOTAL = 28;
 const NODE_W = 400;
 const ROW_H = 20;

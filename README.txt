@@ -269,6 +269,49 @@ hypothesis during scanning:
 You should still run the scanning method yourself for a precise map of your own LoRA.
 
 ------------------------------------------------------------------------------
+LoKr Experimental Build (optional, advanced)
+------------------------------------------------------------------------------
+
+The two release nodes (V2 loader / export) support standard LoRA only. If you have a LoKr
+(a LoRA variant that stores its weights differently), you can try the two experimental nodes
+in the experimental/ folder:
+
+  · Anima LoKr Block Weight [Experimental]        - layered loading at runtime
+  · Anima LoKr Block Weight Export [Experimental] - bake/export
+
+They live under the loaders/experimental menu category. Parameters, UI, and tuning workflow are
+the same as the release nodes, and they also auto-detect standard LoRA (handled as LoRA if found).
+
+What state this build is in (please read):
+
+  It is "mathematically verified, but not image-tested," so it stays an experimental build and is
+  NOT merged into the release nodes.
+
+  Verified (run in code against 3 real LoKr files):
+  · The scaling math is correct - the slider strength scales accurately.
+  · The impact coloring order is correct - it matches the answer from fully reconstructing weights.
+  · Various LoKr storage forms (full / split-in-two / with DoRA) and parameter types don't crash.
+
+  Not verified, and not planned for this build:
+  · Whether the generated images actually look good.
+  · The LoKr "function map" - i.e. what moving a given block's slider actually changes in the image.
+    That requires fixed-seed, one-variable-at-a-time testing in ComfyUI, which is a lot of work and
+    is skipped for now.
+
+  Why it's set up this way:
+  · The release nodes are for standard LoRA, already battle-tested and stable - left untouched.
+  · LoKr stays experimental: usable if you want it, with the clear caveat "math correct, map untested."
+  · The experimental branch is safe-loaded, so even if it errors it won't affect the release nodes.
+
+  One note: across the 3 tested files, the high-energy blocks all land around blocks 14-19, matching
+  the "core segment 15-18" found for the release build above. But remember - high energy does not mean
+  high functional impact; it only means those blocks have large weight values. For precise LoKr tuning,
+  run the scanning method yourself.
+
+  To disable the experimental feature, just delete the entire experimental/ folder; the release nodes
+  are unaffected.
+
+------------------------------------------------------------------------------
 License
 ------------------------------------------------------------------------------
 
