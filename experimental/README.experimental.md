@@ -13,6 +13,10 @@
 
 它们也兼容普通 LoRA（自动检测格式），但请仍把它当实验品。
 
+> 节点标题里的 `[实验性] / [Experimental]` 后缀会跟着 ComfyUI 的界面语言自动切换
+> （中文界面显示 `[实验性]`，英文界面显示 `[Experimental]`）。
+> 如果你手动给节点改过名字，则保留你的命名、不会被覆盖。
+
 **本次更新**：两个实验节点已对齐发布版 V2 的参数体系——grouped 四段
 （seg_motion / proportion / core / detail + 区间可改）、per_block 28 滑块、子模块系数
 （w_self_attn / cross_attn / mlp / adaln 四个子模块系数），并**共享发布版同一界面面板**（含影响力染色）。

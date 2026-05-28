@@ -30,6 +30,35 @@ const NODE_NAMES = [
   "AnimaLoKrBlockWeightExperimental",
   "AnimaLoKrBlockWeightExportExperimental",
 ];
+
+// 仅这两个实验节点的标题需要随界面语言中/英切换。
+// 后端 NODE_DISPLAY_NAME_MAPPINGS 是写死的字符串、不会跟语言变，所以这里在前端动态设标题。
+// 发布版 V2 两个节点标题为纯英文、无需切换，故不列入此表（保持原样）。
+const LOCALIZED_TITLES = {
+  AnimaLoKrBlockWeightExperimental: {
+    zh: "Anima LoKr Block Weight [实验性]",
+    en: "Anima LoKr Block Weight [Experimental]",
+  },
+  AnimaLoKrBlockWeightExportExperimental: {
+    zh: "Anima LoKr Block Weight Export [实验性]",
+    en: "Anima LoKr Block Weight Export [Experimental]",
+  },
+};
+// 该节点所有可能的标题（中+英），用于判断"当前标题是否我们设的默认值"，
+// 是的话才允许随语言改写；若用户手动改过标题（不在此集合内）则不动。
+function localizedTitleSet(nodeName) {
+  const e = LOCALIZED_TITLES[nodeName];
+  return e ? [e.zh, e.en] : [];
+}
+function applyLocalizedTitle(node, nodeName) {
+  const e = LOCALIZED_TITLES[nodeName];
+  if (!e) return;
+  // 仅当当前标题是默认（中/英任一）或为空时才覆盖，避免冲掉用户的自定义重命名
+  const known = localizedTitleSet(nodeName);
+  if (!node.title || known.includes(node.title)) {
+    node.title = isZh() ? e.zh : e.en;
+  }
+}
 const TOTAL = 28;
 const NODE_W = 400;
 const ROW_H = 20;
@@ -396,6 +425,7 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
       const self = this;
+      applyLocalizedTitle(this, nodeData.name);  // 按当前语言设实验节点标题
       const modeW = findW(this, "control_mode");
       if (modeW) {
         const orig = modeW.callback;
@@ -416,7 +446,7 @@ app.registerExtension({
     };
 
     const onConfigure = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function () { const r = onConfigure ? onConfigure.apply(this, arguments) : undefined; const self = this; setTimeout(() => toggleMode(self), 0); return r; };
+    nodeType.prototype.onConfigure = function () { const r = onConfigure ? onConfigure.apply(this, arguments) : undefined; const self = this; applyLocalizedTitle(this, nodeData.name); setTimeout(() => toggleMode(self), 0); return r; };
 
     const onExecuted = nodeType.prototype.onExecuted;
     nodeType.prototype.onExecuted = function (message) {

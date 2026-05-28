@@ -566,6 +566,9 @@ NODE_CLASS_MAPPINGS = {
     "AnimaLoKrBlockWeightExportExperimental": AnimaLoKrBlockWeightExportExperimental,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AnimaLoKrBlockWeightExperimental": "Anima LoKr Block Weight [实验性]",
-    "AnimaLoKrBlockWeightExportExperimental": "Anima LoKr Block Weight Export [实验性]",
+    # 注：这是写死的字符串，不随 ComfyUI 语言切换。
+    # 画布上节点标题的中/英切换由前端 web/anima_block_weight.js 动态处理；
+    # 这里用英文，与发布版两个节点的英文标题风格保持一致（也是节点搜索菜单里显示的名字）。
+    "AnimaLoKrBlockWeightExperimental": "Anima LoKr Block Weight [Experimental]",
+    "AnimaLoKrBlockWeightExportExperimental": "Anima LoKr Block Weight Export [Experimental]",
 }
