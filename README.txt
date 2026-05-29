@@ -159,6 +159,38 @@ and you can map your own LoRA by running this method.
 
 ------------------------------------------------------------------------------
 
+Submodule-type coefficients (w_self_attn / w_cross_attn / w_mlp / w_adaln)
+
+The four segments (seg_1~4) layer by block position — controlling *which layers*. These four w_
+coefficients are a separate axis, layering by submodule type inside each block — controlling *which
+part of each layer*. Both axes apply together and stack.
+
+Each Anima/Cosmos block is built from these four submodule types. In plain terms:
+
+- self_attn: lets positions within the image "look at" each other and coordinate — it handles the
+  image's own internal structure and consistency.
+- cross_attn: brings in your prompt text — the model uses it to keep referencing your prompt
+  throughout denoising. It's the channel through which text conditioning enters the image.
+- mlp (feed-forward): a per-position non-linear transform of features — think of it as each layer's
+  "feature processor."
+- adaln (adaptive layer norm): modulates each layer's intensity using the current denoising timestep.
+  Not a standalone module — it's a modulation knob attached to the above.
+
+How to use: each defaults to 1.0 (unchanged). Lowering one (e.g. 0.7, 0.5) weakens that submodule
+type's contribution across the whole LoRA; 0 nearly disables it. Raising above 1.0 amplifies but risks
+artifacts (cap 2.0, use with care). They multiply with the segments (factor = segment weight × submodule
+coefficient), so you can "weaken only a certain submodule type within a certain segment."
+
+⚠ Key reminder: do not assume "self_attn always controls structure, mlp always controls style."
+Like block segments, what each submodule type carries is trained into each LoRA and differs per LoRA —
+there is no fixed architectural division of labor. Testing has even shown counter-intuitive cases: on
+one LoRA, mlp was the *strongest anatomy knob* while self_attn barely affected anatomy — the opposite of
+"common wisdom." So discover what these knobs actually do on *your* LoRA via the scanning method. One
+empirical starting point: adaln tends to have no single clear direction (diffuse effect), so you can
+leave it at 1.0 and start with self_attn / cross_attn / mlp.
+
+------------------------------------------------------------------------------
+
 impact coloring
 
 In the per-block panel, each row is colored by that block's metric score (blue=low → cyan → yellow → red=high).
