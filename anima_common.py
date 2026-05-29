@@ -444,20 +444,9 @@ def _ranges_from_blocks(blocks):
     return ",".join(f"{a}-{b}" if a != b else f"{a}" for a, b in parts)
 
 
-def auto_segment(impact, total_blocks=28, min_run=2, smooth_win=1):
-    """
-    输入 impact（长度 total_blocks 的 0..1 强度），输出四段区间字符串 dict：
-      {"seg_1": "...", "seg_2": "...", "seg_3": "...", "seg_4": "..."}
-    分位法：按平滑后的强度排序，最弱 1/4 -> weak，依次 medium/strong，最强 1/4 -> peak。
-    最小段长保护：消除 < min_run 的连续碎片（并入相邻档位更接近的段）。
-    每段内部连续，段与段之间可不连续（用逗号分隔多区间）。
-    """
-    if not impact or len(impact) < total_blocks or max(impact) <= 0:
-        # 没有有效强度（如 torch 不可用 / 非 Anima 文件）：返回空，前端不覆盖现有值
-        return {n: "" for n in SEG_NAMES}, None
-
-    sm = _smooth(impact, smooth_win)
-    order = sorted(range(total_blocks), key=lambda i: (sm[i], i))  # 弱→强，稳定排序
+def _tier_quantile(sm, total_blocks):
+    """分位法：按值排序四等分。每档 block 数量均衡（约 total/4）。"""
+    order = sorted(range(total_blocks), key=lambda i: (sm[i], i))
     q = total_blocks / 4.0
     tier = [0] * total_blocks
     for rank, blk in enumerate(order):
@@ -465,6 +454,94 @@ def auto_segment(impact, total_blocks=28, min_run=2, smooth_win=1):
         if tt > 3:
             tt = 3
         tier[blk] = tt
+    return tier
+
+
+def _tier_jenks(sm, total_blocks, k=4):
+    """
+    Jenks 自然断点法（Jenks Natural Breaks, George F. Jenks 1967）：
+    经典的一维数据聚类/分类方法，在数据"自然的缝隙"处切档，使类内方差最小、类间方差最大。
+    相比分位法（机械四等分），它更尊重数据的真实分布——能量集中在何处，就把强档放在何处，
+    档大小可不均衡（这是如实反映 LoRA 真实结构，而非缺陷）。
+    这里用经典 Fisher-Jenks 动态规划实现。仅保证每档至少 1 个 block（防止空档导致滑块失效）。
+    """
+    n = total_blocks
+    srt = sorted(range(n), key=lambda i: sm[i])
+    vals = [sm[i] for i in srt]
+    # 动态规划矩阵
+    m1 = [[0] * (k + 1) for _ in range(n + 1)]
+    m2 = [[float('inf')] * (k + 1) for _ in range(n + 1)]
+    for i in range(1, k + 1):
+        m1[1][i] = 1
+        m2[1][i] = 0.0
+    for l in range(2, n + 1):
+        s1 = s2 = w = 0.0
+        for m in range(1, l + 1):
+            i3 = l - m + 1
+            val = vals[i3 - 1]
+            s2 += val * val
+            s1 += val
+            w += 1
+            v = s2 - (s1 * s1) / w
+            i4 = i3 - 1
+            if i4 != 0:
+                for j in range(2, k + 1):
+                    if m2[l][j] >= (v + m2[i4][j - 1]):
+                        m1[l][j] = i3
+                        m2[l][j] = v + m2[i4][j - 1]
+        m1[l][1] = 1
+        m2[l][1] = s2 - (s1 * s1) / w
+    # 回溯类边界（排序序列上的切点）
+    kc = [0] * (k + 1)
+    kc[k] = n
+    kk = n
+    for j in range(k, 1, -1):
+        kc[j - 1] = m1[kk][j] - 1
+        kk = m1[kk][j] - 1
+    bounds = [0] + kc[1:k] + [n]
+    # 防空档保护：若某档为空（low-variance 数据可能出现），退回分位法
+    sizes = [bounds[i + 1] - bounds[i] for i in range(k)]
+    if any(s <= 0 for s in sizes):
+        return None
+    tier = [0] * n
+    for cls in range(k):
+        for rank in range(bounds[cls], bounds[cls + 1]):
+            tier[srt[rank]] = cls
+    return tier
+
+
+def auto_segment(impact, total_blocks=28, min_run=2, smooth_win=1, method="quantile"):
+    """
+    输入 impact（长度 total_blocks 的 0..1 强度），输出四段区间字符串 dict：
+      {"seg_1": "...", "seg_2": "...", "seg_3": "...", "seg_4": "..."}
+
+    method:
+      - "quantile"（分位法/均分，默认）：按值排序四等分，每档数量均衡、段内连续、手感稳。
+        额外做最小段长保护（消除 < min_run 的连续碎片），适合开箱即用。
+      - "jenks"（自然断点）：Jenks Natural Breaks，按数据自然缝隙切档，更尊重 LoRA 真实分布，
+        档大小可不均衡（强区大、弱区小是如实反映）。段内可不连续。
+
+    两种方式都返回 (四段区间 dict, tier 列表)。
+    """
+    if not impact or len(impact) < total_blocks or max(impact) <= 0:
+        # 没有有效强度（如 torch 不可用 / 非 Anima 文件）：返回空，前端不覆盖现有值
+        return {n: "" for n in SEG_NAMES}, None
+
+    if method == "jenks":
+        # Jenks 用【原始】值，不做平滑——Jenks 本就按真实数值找缝隙，
+        # 平滑会把"高值夹在低值中间"的 block 误拉低（如某 block 有效秩最高却被左右邻居平均下来掉档）。
+        # 平滑只服务于分位法（用来抹毛刺保证连续），不该污染 Jenks 的输入。
+        tier = _tier_jenks(impact, total_blocks)
+        if tier is not None:
+            tiers = {0: [], 1: [], 2: [], 3: []}
+            for i in range(total_blocks):
+                tiers[tier[i]].append(i)
+            return {SEG_NAMES[t]: _ranges_from_blocks(tiers[t]) for t in range(4)}, tier
+        # Jenks 失败（如出现空档）→ 退回分位法兜底
+
+    # 分位法（默认，或 Jenks 兜底）：用平滑值，抹掉孤立毛刺让分段更连续
+    sm = _smooth(impact, smooth_win)
+    tier = _tier_quantile(sm, total_blocks)
 
     def runs(t):
         res = []
@@ -510,6 +587,7 @@ def v2_segment_inputs():
         "control_mode": (["grouped", "per_block"], {"default": "grouped"}),
         "auto_segment": ("BOOLEAN", {"default": True}),
         "segment_metric": (["norm", "effective_rank"], {"default": "norm"}),
+        "segment_method": (["jenks", "quantile"], {"default": "jenks"}),
     }
     for name in SEG_NAMES:
         d[f"{name}_blocks"] = ("STRING", {"default": SEG_DEFAULT_RANGES[name]})

@@ -85,7 +85,7 @@ class AnimaLoRABlockWeightV2:
         return data
 
     def load(self, model, clip, lora_name, strength_model, strength_clip,
-             control_mode, auto_segment, segment_metric,
+             control_mode, auto_segment, segment_metric, segment_method,
              seg_1_blocks, seg_1_weight,
              seg_2_blocks, seg_2_weight,
              seg_3_blocks, seg_3_weight,
@@ -118,7 +118,7 @@ class AnimaLoRABlockWeightV2:
         # 自动分段：打开开关则用实测强度现算四段区间，覆盖手填值
         auto_seg_ranges = {}
         if auto_segment:
-            auto_seg_ranges, _tier = compute_auto_segments(impact, total_blocks)
+            auto_seg_ranges, _tier = compute_auto_segments(impact, total_blocks, method=segment_method)
             wk = auto_seg_ranges.get("seg_1", seg_1_blocks)
             md = auto_seg_ranges.get("seg_2", seg_2_blocks)
             st = auto_seg_ranges.get("seg_3", seg_3_blocks)

@@ -63,7 +63,7 @@ class AnimaLoKrBlockWeightExperimental:
         self.impact_cache = {}
 
     def load(self, model, clip, lora_name, strength_model, strength_clip,
-             control_mode, auto_segment, segment_metric,
+             control_mode, auto_segment, segment_metric, segment_method,
              seg_1_blocks, seg_1_weight,
              seg_2_blocks, seg_2_weight,
              seg_3_blocks, seg_3_weight,
@@ -94,7 +94,7 @@ class AnimaLoKrBlockWeightExperimental:
 
         auto_seg_ranges = {}
         if auto_segment:
-            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks)
+            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks, method=segment_method)
             wk = auto_seg_ranges.get("seg_1", seg_1_blocks)
             md = auto_seg_ranges.get("seg_2", seg_2_blocks)
             st = auto_seg_ranges.get("seg_3", seg_3_blocks)
@@ -163,7 +163,7 @@ class AnimaLoKrBlockWeightExportExperimental:
     DESCRIPTION = ("[Experimental] Bake LoKr/LoRA layering into a file (shared core). | "
                    "[实验性] 把 LoKr/LoRA 分层烘焙成文件（与发布版共用核心逻辑）。")
 
-    def export(self, lora_name, output_name, save_to, control_mode, auto_segment, segment_metric,
+    def export(self, lora_name, output_name, save_to, control_mode, auto_segment, segment_metric, segment_method,
                seg_1_blocks, seg_1_weight,
                seg_2_blocks, seg_2_weight,
                seg_3_blocks, seg_3_weight,
@@ -194,7 +194,7 @@ class AnimaLoKrBlockWeightExportExperimental:
         auto_seg_ranges = {}
         if auto_segment:
             impact = compute_block_metric(raw, total_blocks, metric=segment_metric, fmt=fmt)
-            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks)
+            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks, method=segment_method)
             wk = auto_seg_ranges.get("seg_1", seg_1_blocks)
             md = auto_seg_ranges.get("seg_2", seg_2_blocks)
             st = auto_seg_ranges.get("seg_3", seg_3_blocks)

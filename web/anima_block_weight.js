@@ -164,6 +164,7 @@ const I18N = {
   lbl_lora_name:      { zh: "LoRA 文件", en: "lora_name" },
   lbl_control_mode:   { zh: "控制模式", en: "control_mode" },
   lbl_segment_metric: { zh: "分段指标", en: "segment_metric" },
+  lbl_segment_method: { zh: "分段方式", en: "segment_method" },
   lbl_strength_model: { zh: "模型强度", en: "strength_model" },
   lbl_strength_clip:  { zh: "CLIP强度", en: "strength_clip" },
 };
@@ -388,7 +389,7 @@ function buildPanel(node) {
 
   // control_mode / segment_metric：自绘成 [◄][选项][►] 箭头行（风格统一）
   node._comboRows = [];
-  [["control_mode", "lbl_control_mode"], ["segment_metric", "lbl_segment_metric"]].forEach(([nm, key]) => {
+  [["control_mode", "lbl_control_mode"], ["segment_metric", "lbl_segment_metric"], ["segment_method", "lbl_segment_method"]].forEach(([nm, key]) => {
     if (!findW(node, nm)) return;
     const r = makeComboRow(node, nm, key);
     wrap.appendChild(r.row);
@@ -554,7 +555,7 @@ function refreshAll(node) {
 function toggleMode(node) {
   // 隐藏所有被接管的原生 widget（只留 lora_name 原生显示；control_mode/segment_metric 已自绘成箭头行）
   ["strength_model", "strength_clip", "w_self_attn", "w_cross_attn", "w_mlp", "w_adaln",
-   "auto_segment", "control_mode", "segment_metric",
+   "auto_segment", "control_mode", "segment_metric", "segment_method",
    "seg_1_weight", "seg_2_weight", "seg_3_weight", "seg_4_weight",
    "seg_1_blocks", "seg_2_blocks", "seg_3_blocks", "seg_4_blocks",
    "verbose"].forEach((n) => hideWidget(findW(node, n)));

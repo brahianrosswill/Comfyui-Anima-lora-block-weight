@@ -111,15 +111,42 @@ misleads under one metric. Hence neutral position numbers.
 Auto-segment (on by default)
 
 With auto_segment on (default), the node reads the current LoRA's metric and splits the 28 blocks into
-four segments by quantile, auto-filling the range boxes:
+four segments, auto-filling the range boxes. How it cuts is set by segment_method:
 
-- Quantile: sort by metric value; lowest ~1/4 → seg_1, ..., highest ~1/4 → seg_4.
-- Each segment is internally contiguous; segments may be non-contiguous with each other (e.g. seg_4
-  could be 16-18,24-27).
-- Includes smoothing (removes isolated spikes) and a minimum-run guard (avoids single-block fragments).
+jenks (natural breaks, default) — Jenks Natural Breaks, cutting at the data's natural gaps:
 
-When on, the four range boxes are greyed out (set by the metric); to edit manually, turn it off first.
-On by default so newcomers get a sensible split out of the box.
+- Makes values within each class close and classes far apart (min intra-class, max inter-class variance).
+- Segment sizes may be uneven — this faithfully reflects the LoRA's real structure: e.g. a
+  character LoRA with energy piled at the tail gets one large tail segment + a few small weak ones,
+  telling you to mainly adjust the tail while the rest are just fine-tuning.
+- Verified on 6 real files in-sandbox: jenks's classification quality (GVF) beats quantile on every
+  file and every metric.
+
+quantile — mechanical four-way split by sorted metric value:
+
+- Even class sizes (~7 each), so the four sliders have similar sensitivity and predictable feel.
+- But it ignores actual value gaps and may lump far-apart values together just by adjacent rank.
+- Includes smoothing and a minimum-run guard. Serves as the alternative / fallback to jenks.
+
+About Jenks: a classic 1D classification method by cartographer George F. Jenks (1967, "Jenks Natural
+Breaks"), a public-domain standard algorithm (also the default in software like ArcGIS). This project
+uses that algorithm directly — it is not homegrown.
+
+Both methods keep segments internally contiguous where possible and allow non-contiguous segments (e.g.
+seg_4 could be 16-18,24-27). When on, the range boxes are greyed out; to edit manually, turn off
+auto_segment first. On by default with jenks by default, so newcomers get an out-of-the-box split that
+stays faithful to the LoRA's own structure.
+
+About the default (norm + jenks): we tested all four metric × method combinations on several real
+LoRAs (style / aesthetic / character, etc.) and found norm + jenks to be the most robust default — on
+every LoRA tested, its four segments stayed well-separated in strength with no "dead" segment (one that
+does nothing when adjusted). It never broke down on any LoRA, so we settled on it as the default.
+
+That said: no single combination is optimal for every LoRA. In testing, the best combination varied
+per LoRA — some style LoRAs separated more clearly under effective_rank + quantile, while others were best
+under effective_rank + jenks. That's exactly why both switches stay user-configurable: the default gives
+you the safest starting point, and to tune a specific LoRA to its best, try all four combinations and see
+which makes the four segments most distinct when adjusted.
 
 ------------------------------------------------------------------------------
 
@@ -217,6 +244,7 @@ Parameters
   control_mode  |  enum  |  grouped  |  grouped four-segment / per_block |
   auto_segment  |  bool  |  true  |  Auto-segment (range boxes greyed, set by metric) |
   segment_metric  |  enum  |  norm  |  Segment/color metric: norm / effective_rank |
+  segment_method  |  enum  |  jenks  |  Segmenting: jenks (natural breaks, faithful) / quantile (even, steady feel) |
   seg_1_blocks ~ seg_4_blocks  |  str  |  auto  |  Four-segment ranges (filled by metric when auto on) |
   seg_1_weight ~ seg_4_weight  |  float  |  1.0  |  Per-segment weights |
   blk00 … blk27  |  float  |  1.0  |  Per-block coefficients (per_block) |
@@ -246,7 +274,7 @@ with an export record appended.
   save_to  |  enum  |  loras  |  Save to loras (directly loadable) or output |
   overwrite  |  bool  |  false  |  Overwrite same name; if false, auto-append _1/_2 |
 
-Other params (control_mode / auto_segment / segment_metric / four segments / submodule coeffs) match the loader.
+Other params (control_mode / auto_segment / segment_metric / segment_method / four segments / submodule coeffs) match the loader.
 
 ------------------------------------------------------------------------------
 

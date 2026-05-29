@@ -49,7 +49,7 @@ class AnimaLoRABlockWeightExport:
                    "with auto-segment support. | "
                    "把分层缩放烘焙进新文件（通吃 kohya/diffusers/LoKr，支持自动分段），供普通 Loader 加载。")
 
-    def export(self, lora_name, output_name, save_to, control_mode, auto_segment, segment_metric,
+    def export(self, lora_name, output_name, save_to, control_mode, auto_segment, segment_metric, segment_method,
                seg_1_blocks, seg_1_weight,
                seg_2_blocks, seg_2_weight,
                seg_3_blocks, seg_3_weight,
@@ -81,7 +81,7 @@ class AnimaLoRABlockWeightExport:
         auto_seg_ranges = {}
         if auto_segment:
             impact = compute_block_metric(raw, total_blocks, metric=segment_metric, fmt=fmt)
-            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks)
+            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks, method=segment_method)
             wk = auto_seg_ranges.get("seg_1", seg_1_blocks)
             md = auto_seg_ranges.get("seg_2", seg_2_blocks)
             st = auto_seg_ranges.get("seg_3", seg_3_blocks)
