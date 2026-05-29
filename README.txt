@@ -1,318 +1,228 @@
-==============================================================================
 Anima LoRA Block Weight
-==============================================================================
 
-[About this project]
-This plugin was developed by Claude (Anthropic's AI) after simple testing and in-depth discussion with
-me -- I did not write it myself. The functional map, layering logic, and code were all produced by Claude;
-I provided real-world testing, experimental data, and feedback. The UI design references comfyUI-Realtime-Lora
-(https://github.com/shootthesound/comfyUI-Realtime-Lora) -- the per-layer sliders + impact-coloring
-interaction. Stated here to avoid confusion or ambiguity.
+About this project: This plugin was developed by Claude (Anthropic's AI) after simple testing
+and in-depth discussion with me — I did not write it myself. The layering logic, algorithms, and code
+were all produced by Claude; I provided real-world testing, experimental data, and feedback. The UI
+design references [comfyUI-Realtime-Lora](https://github.com/shootthesound/comfyUI-Realtime-Lora)
+(its per-layer sliders + impact-coloring interaction). Stated here to avoid confusion.
 
-[Interface language]
-Node UI text (buttons, tooltips) switches automatically between English and Chinese based on ComfyUI's
-language setting (Comfy > Locale); backend descriptions are bilingual (EN | ZH).
+Interface language: Node UI text switches automatically between English and Chinese based on
+ComfyUI's language setting (Comfy > Locale). Only the displayed text changes — backend parameter
+names stay fixed, so workflow storage and API calls are unaffected.
+
+A ComfyUI node for block-weight layering of LoRAs. Originally built for Anima (NVIDIA Cosmos
+architecture, 2B anime model), now grown into a more general "auto-segment by measured metric" layering
+tool. Adjust per-layer strength live during generation, or bake a tuned layering into a new LoRA file.
+
+Existing community LoRA layering nodes target Flux/SDXL and hardcode dot-separated regex (blocks.0),
+which can't match Anima's underscore naming (lora_unet_blocks_0_...), so layering silently does nothing
+on Anima. This node fixes that.
+
+Two release nodes (menu category loaders), plus two LoKr experimental nodes (see end):
+
+  Node  |  Purpose  |  Output |
+
+  Anima LoRA Block Weight V2  |  Runtime layering, live  |  Tuning, no file |
+  Anima LoRA Block Weight Export V2  |  Bake layering into a new LoRA  |  .safetensors |
+
+------------------------------------------------------------------------------
+
+An important premise (read first)
+
+Many assume "certain DiT layers always control composition, others always control detail." But per
+NVIDIA's official docs: Anima/Cosmos is a uniformly stacked standard DiT — all 28 blocks share the
+same structure, with no fixed functional partition in the architecture.
+
+So "which block segment controls motion vs color" is not architectural — it is trained into each LoRA
+individually and differs per LoRA. Confirmed in testing: style LoRAs often have their strong region in
+the middle, while character LoRAs may have theirs at the tail (e.g. blocks 26-27).
+
+Therefore this node ships no hardcoded functional presets — a preset that's right on LoRA A is wrong
+on LoRA B. Instead it uses two approaches:
+
+1. Auto-segment: split into four segments by the *current* LoRA's measured metric, not fixed ranges.
+2. Dual metrics: two ways to measure each block, to observe your LoRA from different angles.
+
+What each segment actually controls can only be confirmed by your own generation tests — any static
+metric is an aid, not the answer.
 
 ------------------------------------------------------------------------------
 
-A ComfyUI node providing block-weight layering for LoRAs of Anima (NVIDIA Cosmos architecture, 2B anime model).
-Supports both runtime tuning and bake-to-file export: adjust per-layer strength live during generation,
-or freeze a tuned layering into a new LoRA file.
+Core concept
 
-Existing community LoRA layering nodes are designed for Flux/SDXL and hardcode dot-separated regex
-(blocks.0). They cannot match Anima's underscore naming (lora_unet_blocks_0_...), so layering silently
-does nothing on Anima. This node fixes that. Verified against a real Anima LoRA (28 blocks, 896 weight
-tensors): 100% matched, zero misses.
+Final scaling factor per weight tensor:
 
-Includes two nodes (menu category loaders):
 
-  Node  |  Purpose  |  Output
-  Anima LoRA Block Weight  |  Runtime layering, live  |  Tuning, no file
-  Anima LoRA Block Weight Export  |  Bake layering into a new LoRA  |  Exports .safetensors
+factor = block weight × submodule-type coefficient
 
-------------------------------------------------------------------------------
-Installation
-------------------------------------------------------------------------------
 
-Option 1: git clone (recommended)
+- Block weight: grouped from four segments (seg_1~seg_4); per_block from each block's slider.
+- Submodule-type coefficients: self_attn / cross_attn / mlp / adaln, active in both modes.
+- alpha / dora_scale are not scaled (scaling one down-side tensor already changes the contribution).
 
-    cd ComfyUI/custom_nodes
-    git clone https://github.com/rom0718/Anima-lora-block-weight.git
-
-Option 2: manual download
-
-Download this repo as a zip, extract into ComfyUI's custom_nodes directory, with __init__.py at that level:
-
-    ComfyUI/custom_nodes/Anima-lora-block-weight/
-        ├── __init__.py
-        ├── anima_lora_block_weight_v2.py         # loader node: four-segment / per-block sliders + impact coloring
-        ├── anima_lora_block_weight_export.py     # export node: bake to file
-        ├── web/
-        │   └── anima_block_weight.js             # frontend panel (sliders / coloring / EN-ZH switch)
-        └── experimental/                          # optional: LoKr experimental branch
-
-Both options require: restart ComfyUI, then hard-refresh the browser (Ctrl+Shift+R) to clear the frontend
-cache (after updating a node with frontend JS, the cache must be cleared or old JS may persist).
-
-After restart, find the nodes under loaders. No third-party dependencies.
-
-Update: cd ComfyUI/custom_nodes/Anima-lora-block-weight && git pull , then restart + hard-refresh.
+Why seg_1~seg_4 (pure numbering): earlier versions used motion/proportion/core/detail
+(function assumptions) and weak/medium/strong/peak (strength). But since the node supports two metrics,
+"which tier" means different (even opposite) things under each, so any name implying function or strength
+misleads under one metric. Hence neutral position numbers.
 
 ------------------------------------------------------------------------------
-How it works
-------------------------------------------------------------------------------
 
-Final scale factor per weight tensor:
+Auto-segment (on by default)
 
-    factor = block_weight × submodule_type_weight
+With auto_segment on (default), the node reads the current LoRA's metric and splits the 28 blocks into
+four segments by quantile, auto-filling the range boxes:
 
-· block_weight: in grouped mode, from the four measured segments (motion / proportion / core / detail);
-  in per_block mode, from each block's own slider (blk00-blk27).
-· submodule type weights: self_attn / cross_attn / mlp / adaln, each a multiplier, active in both modes.
-· .alpha tensors are not scaled (scaling up/down already changes the contribution).
+- Quantile: sort by metric value; lowest ~1/4 → seg_1, ..., highest ~1/4 → seg_4.
+- Each segment is internally contiguous; segments may be non-contiguous with each other (e.g. seg_4
+  could be 16-18,24-27).
+- Includes smoothing (removes isolated spikes) and a minimum-run guard (avoids single-block fragments).
 
-Measured functional map (V2 default, from real ablation)
-
-Unlike the generic DiT rule of thumb, V2's segments come from fixed-seed single-variable ablation on real
-Anima style LoRAs. These are tendencies with cross-talk between segments, not clean separations -- each
-segment is a "prior-obedience knob," not a dedicated brush.
-
-  Dimension  |  Value  |  Measured tendency
-  seg_motion  |  block 0-11  |  Prompt-obedience of motion / overall body size
-  seg_proportion  |  block 12-14  |  Prior-obedience of body proportion / stockiness
-  seg_core  |  block 15-18  |  LoRA core expression (anatomy + proportion + material; highest info density)
-  seg_detail  |  block 19-27  |  Global refinement (saturation / purity and other surface attributes)
-  Type · self_attn  |  w_self_attn  |  Detail content + some anatomy + some style
-  Type · cross_attn  |  w_cross_attn  |  Least effect on style -- safest for fine tuning
-  Type · mlp  |  w_mlp  |  Largest effect on anatomy (also carries style)
-  Type · adaln  |  w_adaln  |  Holistic effect, no single direction
-
-! These tendencies were verified on style LoRAs and appear architecture-level (consistent across three very
-different LoRAs), but your specific LoRA may differ. The built-in impact coloring (per_block panel) computes
-each block's weight L2 norm so you can see your LoRA's real hot blocks at a glance; use per_block mode to
-scan and confirm (see "Scanning method"). Full details under "Case study" below.
+When on, the four range boxes are greyed out (set by the metric); to edit manually, turn it off first.
+On by default so newcomers get a sensible split out of the box.
 
 ------------------------------------------------------------------------------
+
+Dual segment metric (segment_metric)
+
+The top segment_metric toggles between two metrics (arrows), driving both auto-segment and coloring:
+
+- norm (default): measures each block's "strength."
+- effective_rank: measures each block's "directional richness."
+
+Why two: testing found these two are strongly negatively correlated — high-norm layers tend to
+concentrate energy in a few directions (strong, specialized transforms), while low-norm layers tend to be
+spread across many directions (broad, weak global adjustments, possibly color/texture-like diffuse
+content). Norm alone treats "low-norm but directionally rich" layers as weak and ignores them;
+effective_rank surfaces them. The two are complementary.
+
+⚠ Both are static metrics reflecting weight properties, not function. Which metric's segments
+better match the functional split you want must be confirmed by your own generation tests — dual metrics
+exist to make that comparison easy, not to decide for you.
+
+A real test (reference; method is reusable)
+
+Using effective_rank on a style LoRA, single-variable test (fixed seed/prompt/sampler/steps/CFG; lower one
+segment's weight to 0.3 at a time). Results apply only to that one LoRA — illustrative only.
+
+  Segment (its effective_rank distribution)  |  Effect of lowering to 0.3 |
+
+  one segment  |  Overall style switch: linework/coloring/pose/anatomy all change noticeably; biggest impact |
+  another  |  Mainly changes "motion"; the rest barely changes |
+  another  |  Controls small objects/props integrity: held items deform or break, but the subject is unaffected |
+  another (highest-frequency)  |  Controls highest-frequency detail: anatomy barely changes; mainly cleans up the image (removes high-frequency noise) |
+
+The value isn't memorizing "which segment does what" (true only for that LoRA), but showing that
+effective_rank's segments do map to distinct functions; the "biggest-impact segment" isn't necessarily the
+highest-valued one under effective_rank (which is exactly why neutral numbering replaced strength names);
+and you can map your own LoRA by running this method.
+
+------------------------------------------------------------------------------
+
+impact coloring
+
+In the per-block panel, each row is colored by that block's metric score (blue=low → cyan → yellow → red=high).
+- Uses the currently selected segment_metric, contrast-stretched.
+- It's an intrinsic LoRA property, unaffected by your slider changes.
+- Requires one generation first. The coloring data is persisted, so refresh/reload/copy won't lose it.
+
+------------------------------------------------------------------------------
+
 Loader node: Anima LoRA Block Weight V2
-------------------------------------------------------------------------------
 
-Runtime layering, live. V2 is the recommended main node. Compared to V1 it adds a measurement-based
-four-segment split, a graphical per-block slider panel, and impact coloring.
+Runtime layering, live — the recommended main node. Two control modes (control_mode, top arrows):
 
-Three control modes (switch via control_mode):
-
-  grouped (four segments, default): based on the measured functional map, each range customizable
-    seg_motion     default 0-11   prompt-obedience of motion / overall body size
-    seg_proportion default 12-14  prior-obedience of body proportion / stockiness
-    seg_core       default 15-18  the LoRA's core expression segment (highest info density)
-    seg_detail     default 19-27  global refinement
-  per_block (sliders): one slider per block (28). With frontend JS, renders as a compact panel
-    (checkbox + slider + number box + impact coloring).
-
-Impact coloring:
-  In the per_block panel, each row is colored by that block's impact score (blue=low -> cyan -> yellow
-  -> red=high). Impact is computed at runtime from each block's LoRA weight L2 norm, contrast-stretched
-  into a color, reflecting the block's relative importance within this LoRA. Notes:
-  - Impact is an intrinsic property of the LoRA; it does NOT change when you adjust sliders.
-  - Uses contrast stretch ([weakest,strongest] -> [blue,red]): expresses relative importance within
-    this LoRA, not absolute strength.
-  - Generate once before the node sends impact data to the frontend for coloring.
-
-About the frontend JS and "native fallback":
-  All controls (strength, the four segments, w_, verbose, per-block) are ComfyUI native widgets underneath;
-  the frontend JS only hides them and redraws a unified compact panel ("native controls as the base, JS as
-  the skin"). On a normal install, the JS loads automatically with the node, so you see the compact panel.
-  If the JS fails to load (stale cache / missing file / incompatible frontend), the node falls back to all
-  native controls laid out directly: strength / the four segment ranges and weights / w_ / verbose / the 28
-  blk sliders all show at once (no longer auto-hiding by mode). The node gets long and unpolished -- but it
-  is fully functional: values pass through and generation works; you only lose the compact layout, coloring,
-  and mode-based hiding.
-  If you see scattered native sliders instead of the compact panel:
-    1) Hard-refresh the browser (Ctrl+Shift+R) first (stale cache is the most common cause);
-    2) If that fails, confirm web/anima_block_weight.js exists;
-    3) Open the browser console (F12) to check for errors.
+- grouped (four segments, default): seg_1~seg_4, each a range box + a weight. Best with auto-segment.
+- per_block: 28 sliders, shown as a compact graphical panel when JS is loaded; good for fine scanning.
 
 Parameters
 
-  Parameter  |  Type  |  Default  |  Description
-  model / clip  |  —  |  —  |  Model and CLIP inputs
-  lora_name  |  dropdown  |  —  |  LoRA file to load
-  strength_model / strength_clip  |  float  |  1.0  |  Overall LoRA strength on model / CLIP
-  control_mode  |  enum  |  grouped  |  grouped four-segment / per_block sliders
-  seg_motion_blocks / _weight  |  str / float  |  "0-11" / 1.0  |  Motion segment range & factor
-  seg_proportion_blocks / _weight  |  str / float  |  "12-14" / 1.0  |  Proportion segment range & factor
-  seg_core_blocks / _weight  |  str / float  |  "15-18" / 1.0  |  Core segment range & factor
-  seg_detail_blocks / _weight  |  str / float  |  "19-27" / 1.0  |  Detail segment range & factor
-  blk00 … blk27  |  float  |  1.0  |  Per-block factors (per_block; JS beautifies into a panel)
-  w_self_attn / w_cross_attn / w_mlp / w_adaln  |  float  |  1.0  |  Submodule type factors
-  verbose  |  bool  |  false  |  Print per-block factors to console
+  Param  |  Type  |  Default  |  Notes |
 
-Common recipes (grouped four segments)
+  model / clip  |  —  |  —  |  Model & CLIP input |
+  lora_name  |  dropdown  |  —  |  LoRA file (click to open list) |
+  strength_model / strength_clip  |  float  |  1.0  |  Overall LoRA strength on model / CLIP |
+  control_mode  |  enum  |  grouped  |  grouped four-segment / per_block |
+  auto_segment  |  bool  |  true  |  Auto-segment (range boxes greyed, set by metric) |
+  segment_metric  |  enum  |  norm  |  Segment/color metric: norm / effective_rank |
+  seg_1_blocks ~ seg_4_blocks  |  str  |  auto  |  Four-segment ranges (filled by metric when auto on) |
+  seg_1_weight ~ seg_4_weight  |  float  |  1.0  |  Per-segment weights |
+  blk00 … blk27  |  float  |  1.0  |  Per-block coefficients (per_block) |
+  w_self_attn / w_cross_attn / w_mlp / w_adaln  |  float  |  1.0  |  Submodule-type coefficients |
+  verbose  |  bool  |  false  |  Print per-block factors to console |
 
-  Goal  |  motion  |  proportion  |  core  |  detail  |  type weights
-  Make body size follow prompt more  |  0.5  |  1.0  |  1.0  |  1.0  |  all 1.0
-  Lock proportion against prompt  |  1.0  |  lower=more prior  |  1.0  |  1.0  |  all 1.0
-  Large overhaul, soften the look  |  1.0  |  1.0  |  0.5-0.7  |  1.0  |  all 1.0
-  Reduce anatomy only (accept some style loss)  |  1.0  |  1.0  |  1.0  |  1.0  |  w_mlp=0.7
-  Counter prompt-hijacking / concept pollution  |  1.0  |  1.0  |  1.0  |  1.0  |  w_cross_attn=0.5
-
+Native fallback: all controls are ComfyUI native widgets; JS only hides and redraws them into a
+compact panel. If JS fails to load, the node falls back to native widgets laid out plainly — long but
+fully functional. If you see scattered native sliders: ① hard-refresh Ctrl+Shift+R (usually cache);
+② confirm web/anima_block_weight.js exists; ③ check the F12 console.
 
 ------------------------------------------------------------------------------
+
 Export node: Anima LoRA Block Weight Export V2
-------------------------------------------------------------------------------
 
-Bakes the layering into a new .safetensors. Complementary to the loader node: the loader is for tuning and
-produces no file; the export node freezes the same scaling into a finished file, loadable by any plain LoRA Loader.
+Bakes the layered scaling into a new .safetensors. Complementary to the loader: loader is for tuning
+(no file), exporter freezes the same scaling into a finished file any plain LoRA Loader can load (result =
+your coefficients + strength 1.0).
 
-Recommended flow: tune coefficients with the loader node until satisfied → put the same coefficients
-into the export node → get a finished file. Loading it equals your coefficients at strength 1.0, with no
-layering node attached — and is easy to share.
+Implementation: the factor is multiplied into one down-side tensor per module (kohya lora_down,
+diffusers lora_A, LoKr lokr_w1); up-side / alpha / dora_scale unchanged; original __metadata__ kept
+with an export record appended.
 
-Implementation
+  Param  |  Type  |  Default  |  Notes |
 
-The factor (as above) is multiplied into each module's lora_down (single-sided scaling, mathematically
-equivalent to runtime tensor*factor); lora_up and alpha stay unchanged; the original __metadata__
-is preserved with an export record appended. Verified on a real file: exact scaling ratios, up/alpha unchanged,
-file structure intact.
+  output_name  |  str  |  anima_lora_baked  |  Output filename (.safetensors auto-appended) |
+  save_to  |  enum  |  loras  |  Save to loras (directly loadable) or output |
+  overwrite  |  bool  |  false  |  Overwrite same name; if false, auto-append _1/_2 |
 
-Export-only parameters
-
-  Parameter  |  Type  |  Default  |  Description
-  output_name  |  str  |  anima_lora_baked  |  Output filename (.safetensors auto-appended)
-  save_to  |  enum  |  loras  |  Save to loras (directly loadable) or output
-  overwrite  |  bool  |  false  |  Overwrite same name; if false, auto-appends _1/_2
-
-All other parameters (control_mode / tiers / block_weights / four type weights / default_weight) match the loader node.
+Other params (control_mode / auto_segment / segment_metric / four segments / submodule coeffs) match the loader.
 
 ------------------------------------------------------------------------------
-Scanning method (find your LoRA's true boundaries)
-------------------------------------------------------------------------------
 
-per_block mode can map your LoRA's functions:
+Three storage formats supported
 
-1. Fix seed, prompt, sampler, steps, CFG (control variables).
-2. With per_block, turn off one small range at a time:
-       0-27:1.0, 0-3:0      # only 0–3 off
-       0-27:1.0, 4-7:0      # only 4–7 off
-       ...                  # up to 24-27
-3. Compare each against the all-1.0 baseline: if composition collapses → that range governs the skeleton;
-   if style changes → that range governs style.
-4. Record results, return to grouped mode with the measured boundaries for efficient daily use.
-
-Tuning tips: change one set of knobs at a time with a fixed seed; explore mainly within 0.0–1.0
-(>1.0 risks artifacts, max 2.0); enable verbose to confirm applied values.
+Auto-detected, no manual selection:
+- kohya: .lora_down.weight / .lora_up.weight (most common)
+- diffusers: .lora_A.weight / .lora_B.weight (some LoRAs; earlier builds couldn't measure these — now supported)
+- LoKr: .lokr_w1 / .lokr_w2 (experimental nodes)
 
 ------------------------------------------------------------------------------
-Case study: Real functional map of an Anima LoRA
-------------------------------------------------------------------------------
 
-To illustrate that "the default table is only a starting point," this section records one complete
-scanning run. Results apply only to the LoRA tested, but they reflect a general pattern: on the
-Anima/Cosmos architecture, multiple theoretical defaults may be systematically shifted. Scan your own
-LoRA to verify.
+Scanning method (map your own LoRA's real function distribution)
 
-Method
+Since distribution differs per LoRA, scanning yourself is most reliable:
 
-Control variables: fixed seed / prompt / sampler / steps / CFG; all other LoRAs disabled. One knob is
-changed per shot, others kept at 1.0, each compared against the all-1.0 baseline.
+1. Fix seed/prompt/sampler/steps/CFG; disable all other LoRAs.
+2. Use auto-segment for four segments, or per_block to move one small range at a time.
+3. Lower one segment (or one submodule coefficient) to 0.3~0.5 vs the all-1.0 baseline: composition
+   collapses → that segment controls structure; style/linework changes → controls style; color changes → controls color.
+4. Record, return to grouped, fine-tune around the measured boundaries.
+5. Switch segment_metric (norm / effective_rank) and scan each — see which metric's segments map more
+   cleanly to a given function. That's the point of dual metrics.
 
-Results
-
-By block depth:
-
-  Stage  |  Observed role  |  Theoretical default
-  shallow 0-8  |  Motion consistency: hand gestures, facial expression, toe orientation, etc.  |  Composition / anatomy ✗
-  middle 9-18  |  Dense-information layer: anatomy + most of the style + part of the composition  |  Transition ✗
-  deep 19-27  |  Minor style details / brushwork  |  Main style ✗
-
-By submodule type:
-
-  Knob  |  Observed role  |  Theoretical default
-  w_self_attn  |  Detail content + minor anatomy + minor style  |  Anatomy / pose ✗
-  w_mlp  |  Largest effect on anatomy; also affects style (strongest single-dimension knob)  |  Style ✗
-  w_cross_attn  |  Smallest effect on style; light detail tweaks (safe micro-adjust)  |  Prompt response ⚠
-  w_adaln  |  Global influence: all dimensions shift; no specific direction  |  Overall tone ✓
-
-Counter-intuitive finding: w_mlp is the strongest anatomy knob on this LoRA, while w_self_attn has
-only minor effect on anatomy — the opposite of the "self_attn governs spatial structure" rule of
-thumb. This is explainable from training-data distribution: when anatomy and style are jointly trained
-into the same block range and the same submodule type (here, the mlp of the middle stage), adjusting
-mlp will shift both at once.
-
-Recipes derived from this map
-
-  Goal  |  Configuration
-  Reduce anatomy, accept some style loss  |  w_mlp=0.7, others 1.0
-  Large overhaul, soften the overall look  |  seg_core_weight=0.5-0.7, others 1.0
-  Tiny detail tweaks with style nearly intact  |  w_cross_attn=0.7, others 1.0
-  Preserve the LoRA's signature look  |  All 1.0; use prompts / negatives to adjust specific elements
-  Reduce motion exaggeration while keeping body type  |  seg_motion_weight=0.5-0.7, others 1.0
-
-Important practical conclusion
-
-On this LoRA, fully separating style from anatomy is not achievable — they are physically trained into
-the same range (middle) and the same submodule type (mlp). This is a property of the LoRA's training,
-not a limitation of the node. The right strategy is not to seek clean separation but to find an
-acceptable trade-off (e.g. a sweet spot at ~60% anatomy reduction with ~20% style loss).
-
-Notes for other Anima LoRA users
-
-The map above is not a universal Anima configuration — every LoRA differs. But compared to the DiT
-defaults, it may be closer to how Anima-architecture LoRAs actually behave, and can serve as a priority
-hypothesis during scanning:
-
-· Suspect first that middle is the dense-information layer (rather than shallow)
-· Suspect first that mlp and self_attn may swap roles vs. the DiT rule of thumb
-· w_adaln typically has no specific direction; keep at 1.0 first
-· w_cross_attn is typically the safest light-touch knob
-
-You should still run the scanning method yourself for a precise map of your own LoRA.
+Tips: move one knob group at a time with a fixed seed; explore 0.0~1.0 mostly (>1.0 risks artifacts, cap 2.0);
+enable verbose to verify applied values.
 
 ------------------------------------------------------------------------------
-LoKr Experimental Build (optional, advanced)
-------------------------------------------------------------------------------
 
-The two release nodes (V2 loader / export) support standard LoRA only. If you have a LoKr
-(a LoRA variant that stores its weights differently), you can try the two experimental nodes
-in the experimental/ folder:
+LoKr experimental (optional, advanced)
 
-  · Anima LoKr Block Weight [Experimental]        - layered loading at runtime
-  · Anima LoKr Block Weight Export [Experimental] - bake/export
+The two release nodes are stable on plain LoRAs. For LoKr (a LoRA variant stored differently), try the two
+experimental nodes in experimental/ (menu loaders/experimental); same params and UX, and they also
+auto-detect plain LoRAs.
 
-They live under the loaders/experimental menu category. Parameters, UI, and tuning workflow are
-the same as the release nodes, and they also auto-detect standard LoRA (handled as LoRA if found).
+Real status (important): "math verified, but no generation testing," so it stays experimental and is
+not merged into the release nodes.
 
-What state this build is in (please read):
-
-  It is "mathematically verified, but not image-tested," so it stays an experimental build and is
-  NOT merged into the release nodes.
-
-  Verified (run in code against 3 real LoKr files):
-  · The scaling math is correct - the slider strength scales accurately.
-  · The impact coloring order is correct - it matches the answer from fully reconstructing weights.
-  · Various LoKr storage forms (full / split-in-two / with DoRA) and parameter types don't crash.
-
-  Not verified, and not planned for this build:
-  · Whether the generated images actually look good.
-  · The LoKr "function map" - i.e. what moving a given block's slider actually changes in the image.
-    That requires fixed-seed, one-variable-at-a-time testing in ComfyUI, which is a lot of work and
-    is skipped for now.
-
-  Why it's set up this way:
-  · The release nodes are for standard LoRA, already battle-tested and stable - left untouched.
-  · LoKr stays experimental: usable if you want it, with the clear caveat "math correct, map untested."
-  · The experimental branch is safe-loaded, so even if it errors it won't affect the release nodes.
-
-  One note: across the 3 tested files, the high-energy blocks all land around blocks 14-19, matching
-  the "core segment 15-18" found for the release build above. But remember - high energy does not mean
-  high functional impact; it only means those blocks have large weight values. For precise LoKr tuning,
-  run the scanning method yourself.
-
-  To disable the experimental feature, just delete the entire experimental/ folder; the release nodes
-  are unaffected.
+- Verified (in code, across multiple real LoKr files): scaling math correct (factor on only one w1-side
+  block, equivalent to overall scaling, never squared); impact ordering correct (matches the
+  fully-reconstructed reference); all storage forms (full / decomposed / with DoRA) and parameter types
+  don't crash (never reads alpha/rank, avoiding the inf-alpha trap some LoKrs have).
+- Not verified, and not in this version: actual generation quality; LoKr's functional distribution
+  (needs per-variable generation tests — large effort, deferred).
+- The experimental branch loads safely; even if it errors it won't affect the release nodes. To remove it,
+  delete the whole experimental/ folder.
 
 ------------------------------------------------------------------------------
+
 License
-------------------------------------------------------------------------------
 
 MIT

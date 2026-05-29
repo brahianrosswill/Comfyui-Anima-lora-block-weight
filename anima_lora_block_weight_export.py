@@ -1,126 +1,30 @@
 """
-Anima LoRA Block Weight Exporter — 分层导出节点
-===============================================
-把分层缩放「烘焙」进一个新的 .safetensors 文件。
+Anima LoRA Block Weight Export V2 — 把分层缩放烘焙进新文件
+=====================================================================================
+参数与加载节点一致（四段强度命名 weak/medium/strong/peak + 自动分段开关），
+便于把调好的系数原样搬过来烘焙。三格式通吃：kohya/diffusers LoRA + LoKr。
+导出的文件用任何普通 LoRA Loader 加载即可，效果 = 这组系数 + strength 1.0。
 
-与主加载节点 AnimaLoRABlockWeight 的区别：
-  - 主节点：运行时分层，临时缩放后喂给模型，不产生文件（用于调试）
-  - 本节点：把同样的分层缩放固化成一个新 LoRA 文件（用于固化/分享）
-
-推荐流程：先用主节点反复试出满意的系数 → 把同一组系数填进本节点导出成品。
-导出的文件用任何普通 LoRA Loader 加载即可，效果 = 主节点里那组系数 + strength 1.0。
-
-技术说明：
-  缩放系数 factor = block权重 × 子模块类型系数。
-  factor 直接乘到每个模块的 lora_down 权重上（单边缩放，
-  数学等价于运行时 tensor*factor）；alpha 保持不变。
-  保留原 LoRA 的 __metadata__，并追加一条导出记录。
+⚠️ 旧工作流不兼容：四段已从 motion/proportion/core/detail 改名为
+   weak/medium/strong/peak。需要旧版请到 GitHub 历史 commit 下载。
 """
 
 import os
-import re
 import json
-import torch
 import folder_paths
 import comfy.utils
 from safetensors.torch import save_file
 
-
-BLOCK_RE = re.compile(r"blocks[_.](\d+)[_.]")
-
-
-def classify_submodule(key: str) -> str:
-    k = key.lower()
-    if "adaln" in k:
-        return "adaln"
-    if "self_attn" in k:
-        return "self_attn"
-    if "cross_attn" in k:
-        return "cross_attn"
-    if "mlp" in k:
-        return "mlp"
-    return "other"
-
-
-def parse_block_range(range_str: str, total_blocks: int):
-    range_str = (range_str or "").strip().lower()
-    if range_str in ("", "all"):
-        return set(range(total_blocks))
-    result = set()
-    for part in range_str.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            a, b = part.split("-", 1)
-            try:
-                a, b = int(a), int(b)
-                for i in range(min(a, b), max(a, b) + 1):
-                    if 0 <= i < total_blocks:
-                        result.add(i)
-            except ValueError:
-                pass
-        else:
-            try:
-                i = int(part)
-                if 0 <= i < total_blocks:
-                    result.add(i)
-            except ValueError:
-                pass
-    return result if result else set(range(total_blocks))
-
-
-def parse_per_block_weights(spec: str, total_blocks: int, default: float):
-    weights = [default] * total_blocks
-    spec = (spec or "").strip()
-    if not spec:
-        return weights
-    tokens = re.split(r"[,\n;]+", spec)
-    tokens = [t.strip() for t in tokens if t.strip()]
-    has_colon = any(":" in t for t in tokens)
-    if not has_colon:
-        seq = []
-        for t in tokens:
-            try:
-                seq.append(float(t))
-            except ValueError:
-                pass
-        for i in range(min(len(seq), total_blocks)):
-            weights[i] = seq[i]
-        return weights
-    for t in tokens:
-        if ":" not in t:
-            continue
-        left, right = t.split(":", 1)
-        left, right = left.strip(), right.strip()
-        try:
-            val = float(right)
-        except ValueError:
-            continue
-        if "-" in left:
-            a, b = left.split("-", 1)
-            try:
-                a, b = int(a), int(b)
-                for i in range(min(a, b), max(a, b) + 1):
-                    if 0 <= i < total_blocks:
-                        weights[i] = val
-            except ValueError:
-                pass
-        else:
-            try:
-                i = int(left)
-                if 0 <= i < total_blocks:
-                    weights[i] = val
-            except ValueError:
-                pass
-    return weights
+from .anima_common import (
+    SEG_NAMES,
+    detect_total_blocks, detect_format, compute_block_impact, compute_block_metric,
+    apply_layered_scaling, build_block_weights,
+    auto_segment as compute_auto_segments, v2_segment_inputs,
+)
 
 
 class AnimaLoRABlockWeightExport:
-    """
-    把分层缩放烘焙进新的 LoRA 文件。参数与主节点一致，便于把调好的系数原样搬过来。
-    输出文件保存到 ComfyUI/output/<output_name>.safetensors（或 loras 目录，见 save_to）。
-    """
+    """把分层缩放烘焙进新的 LoRA 文件。参数与加载节点一致。"""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -129,24 +33,9 @@ class AnimaLoRABlockWeightExport:
             "lora_name": (lora_list,),
             "output_name": ("STRING", {"default": "anima_lora_baked"}),
             "save_to": (["output", "loras"], {"default": "loras"}),
-
-            "control_mode": (["grouped", "per_block"], {"default": "grouped"}),
-
-            "seg_motion_blocks": ("STRING", {"default": "0-11"}),
-            "seg_motion_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "seg_proportion_blocks": ("STRING", {"default": "12-14"}),
-            "seg_proportion_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "seg_core_blocks": ("STRING", {"default": "15-18"}),
-            "seg_core_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "seg_detail_blocks": ("STRING", {"default": "19-27"}),
-            "seg_detail_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-
-            "w_self_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "w_cross_attn": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "w_mlp": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "w_adaln": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            "overwrite": ("BOOLEAN", {"default": False}),
         }
+        req.update(v2_segment_inputs())
+        req["overwrite"] = ("BOOLEAN", {"default": False})
         for i in range(28):
             req[f"blk{i:02d}"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01})
         return {"required": req}
@@ -156,90 +45,63 @@ class AnimaLoRABlockWeightExport:
     FUNCTION = "export"
     CATEGORY = "loaders"
     OUTPUT_NODE = True
-    DESCRIPTION = ("Bake layered scaling into a new Anima LoRA file for any plain Loader. | "
-                   "把分层缩放烘焙进新的 Anima LoRA 文件，供普通 Loader 直接加载。")
+    DESCRIPTION = ("Bake layered scaling into a new LoRA file (kohya/diffusers/LoKr), "
+                   "with auto-segment support. | "
+                   "把分层缩放烘焙进新文件（通吃 kohya/diffusers/LoKr，支持自动分段），供普通 Loader 加载。")
 
-    def export(self, lora_name, output_name, save_to, control_mode,
-               seg_motion_blocks, seg_motion_weight,
-               seg_proportion_blocks, seg_proportion_weight,
-               seg_core_blocks, seg_core_weight,
-               seg_detail_blocks, seg_detail_weight,
+    def export(self, lora_name, output_name, save_to, control_mode, auto_segment, segment_metric,
+               seg_1_blocks, seg_1_weight,
+               seg_2_blocks, seg_2_weight,
+               seg_3_blocks, seg_3_weight,
+               seg_4_blocks, seg_4_weight,
                w_self_attn, w_cross_attn, w_mlp, w_adaln, overwrite,
                **block_kwargs):
 
         lora_path = folder_paths.get_full_path("loras", lora_name)
         raw = comfy.utils.load_torch_file(lora_path, safe_load=True)
 
-        # 读取原始 metadata（safetensors header 里的 __metadata__）
         orig_meta = {}
         try:
             import struct
             with open(lora_path, "rb") as f:
                 n = struct.unpack("<Q", f.read(8))[0]
-                hdr = json.loads(f.read(n))
-                orig_meta = hdr.get("__metadata__", {}) or {}
+                orig_meta = json.loads(f.read(n)).get("__metadata__", {}) or {}
         except Exception as e:
             print(f"[AnimaExport] 读取原 metadata 失败（忽略）: {e}")
 
-        # 总 block 数
-        max_block = -1
-        for k in raw.keys():
-            m = BLOCK_RE.search(k)
-            if m:
-                max_block = max(max_block, int(m.group(1)))
-        total_blocks = max_block + 1 if max_block >= 0 else 0
+        total_blocks = detect_total_blocks(raw)
         if total_blocks == 0:
-            msg = "[AnimaExport] 未检测到 blocks_N 结构，可能不是 Anima LoRA，已中止。"
+            msg = "[AnimaExport] 未检测到 blocks_N 结构，已中止。"
             print(msg)
             return (msg,)
 
-        # 每 block 权重
-        if control_mode == "per_block":
-            block_w = []
-            for i in range(total_blocks):
-                v = block_kwargs.get(f"blk{i:02d}", 1.0)
-                try:
-                    block_w.append(float(v))
-                except (ValueError, TypeError):
-                    block_w.append(1.0)
-        else:  # grouped 四段
-            segs = [
-                (parse_block_range(seg_detail_blocks, total_blocks), seg_detail_weight),
-                (parse_block_range(seg_core_blocks, total_blocks), seg_core_weight),
-                (parse_block_range(seg_proportion_blocks, total_blocks), seg_proportion_weight),
-                (parse_block_range(seg_motion_blocks, total_blocks), seg_motion_weight),
-            ]
-            block_w = []
-            for i in range(total_blocks):
-                val = 1.0
-                for sset, sw in segs:
-                    if i in sset:
-                        val = sw
-                block_w.append(val)
+        fmt = detect_format(raw)
 
-        type_weight = {
-            "self_attn": w_self_attn, "cross_attn": w_cross_attn,
-            "mlp": w_mlp, "adaln": w_adaln, "other": 1.0,
-        }
+        # 自动分段（与加载节点一致：开关打开则用实测强度现算区间）
+        auto_seg_ranges = {}
+        if auto_segment:
+            impact = compute_block_metric(raw, total_blocks, metric=segment_metric, fmt=fmt)
+            auto_seg_ranges, _ = compute_auto_segments(impact, total_blocks)
+            wk = auto_seg_ranges.get("seg_1", seg_1_blocks)
+            md = auto_seg_ranges.get("seg_2", seg_2_blocks)
+            st = auto_seg_ranges.get("seg_3", seg_3_blocks)
+            pk = auto_seg_ranges.get("seg_4", seg_4_blocks)
+        else:
+            wk, md, st, pk = seg_1_blocks, seg_2_blocks, seg_3_blocks, seg_4_blocks
 
-        # 烘焙：factor 乘进 lora_down，alpha 不动
-        out = {}
-        baked = 0
-        for key, tensor in raw.items():
-            m = BLOCK_RE.search(key)
-            if not m:
-                out[key] = tensor.clone()
-                continue
-            idx = int(m.group(1))
-            factor = block_w[idx] * type_weight[classify_submodule(key)]
-            if key.endswith(".lora_down.weight") or key.endswith(".lora_down"):
-                out[key] = (tensor.to(torch.float32) * factor).to(tensor.dtype)
-                baked += 1
-            else:
-                # lora_up / alpha / 其它：原样保留
-                out[key] = tensor.clone()
+        seg_specs = [
+            (wk, seg_1_weight),
+            (md, seg_2_weight),
+            (st, seg_3_weight),
+            (pk, seg_4_weight),
+        ]
+        block_w = build_block_weights(control_mode, total_blocks, seg_specs, block_kwargs)
 
-        # 输出路径
+        type_weight = {"self_attn": w_self_attn, "cross_attn": w_cross_attn,
+                       "mlp": w_mlp, "adaln": w_adaln, "other": 1.0}
+
+        out, baked, fmt = apply_layered_scaling(raw, block_w, type_weight)
+
         base_dir = (folder_paths.get_output_directory() if save_to == "output"
                     else folder_paths.get_folder_paths("loras")[0])
         os.makedirs(base_dir, exist_ok=True)
@@ -254,9 +116,9 @@ class AnimaLoRABlockWeightExport:
                 i += 1
             save_path = os.path.join(base_dir, f"{stem}_{i}.safetensors")
 
-        # metadata：保留原始 + 追加导出记录
         meta = {k: str(v) for k, v in orig_meta.items()}
         meta["anima_lbw_baked"] = "true"
+        meta["anima_lbw_format"] = fmt
         meta["anima_lbw_source"] = os.path.basename(lora_path)
         meta["anima_lbw_mode"] = control_mode
         meta["anima_lbw_block_weights"] = ",".join(f"{w:g}" for w in block_w)
@@ -267,8 +129,8 @@ class AnimaLoRABlockWeightExport:
         save_file(out, save_path, metadata=meta)
 
         msg = (f"[AnimaExport] 已导出: {save_path}\n"
-               f"  source={os.path.basename(lora_path)} mode={control_mode} "
-               f"baked_down_tensors={baked}\n"
+               f"  source={os.path.basename(lora_path)} format={fmt} mode={control_mode} "
+               f"baked_tensors={baked}\n"
                f"  block_weights={meta['anima_lbw_block_weights']}")
         print(msg)
         return (save_path,)

@@ -10,8 +10,9 @@
 // 面板内部结构（grouped）：
 //   strength_model / strength_clip            （名称 + [◄][数值][►]）
 //   ── 分隔 ──
-//   seg_motion   : [区间文本] + 方块+滑块+数值 + impact染色
-//   seg_proportion / seg_core / seg_detail     （同上）
+//   auto_segment（开关：按实测强度自动分段，开启时下方区间框置灰）
+//   seg_1 : [区间文本] + 方块+滑块+数值 + impact染色
+//   seg_2 / seg_3 / seg_4                        （同上）
 //   ── 分隔 ──
 //   w_self_attn / w_cross_attn / w_mlp / w_adaln（方块+滑块+数值，不染色）
 //   ── 分隔 ──
@@ -30,6 +31,61 @@ const NODE_NAMES = [
   "AnimaLoKrBlockWeightExperimental",
   "AnimaLoKrBlockWeightExportExperimental",
 ];
+
+// 四段区间的默认值（与后端 anima_common.SEG_DEFAULT_RANGES 保持一致）
+const SEG_BLOCK_DEFAULTS = {
+  seg_1_blocks: "0-6",
+  seg_2_blocks: "7-13",
+  seg_3_blocks: "14-20",
+  seg_4_blocks: "21-27",
+};
+const SEG_WEIGHT_NAMES = ["seg_1_weight", "seg_2_weight", "seg_3_weight", "seg_4_weight"];
+
+// 旧工作流兼容：早期版本四段名是 motion/proportion/core/detail 且无 auto_segment，
+// 用旧工作流加载到新节点时，存的 widget 值数组会整体错位——典型表现是本该是数字的
+// 权重 widget 收到了像 "14-19" 这样的区间字符串。这里检测这种错位并把四段相关 widget
+// 重置成默认值，避免节点因类型校验失败而无法运行（旧版请到 GitHub 历史 commit 下载）。
+function detectAndFixLegacyMisalignment(node) {
+  try {
+    let misaligned = false;
+    // 信号1：某个 weight widget 的值是字符串且含 '-'（区间错位过来了）
+    for (const wn of SEG_WEIGHT_NAMES) {
+      const w = node.widgets?.find((x) => x.name === wn);
+      if (w && typeof w.value === "string" && /[0-9]\s*-\s*[0-9]/.test(w.value)) { misaligned = true; break; }
+    }
+    // 信号2：存在更早版本的四段参数名残留（v1: motion/core；v2: weak/peak）
+    if (!misaligned && node.widgets) {
+      const names = node.widgets.map((x) => x.name);
+      if (names.includes("seg_motion_weight") || names.includes("seg_core_weight") ||
+          names.includes("seg_weak_weight") || names.includes("seg_peak_weight")) misaligned = true;
+    }
+    if (!misaligned) return false;
+
+    // 重置四段区间为默认
+    for (const [bn, def] of Object.entries(SEG_BLOCK_DEFAULTS)) {
+      const w = node.widgets?.find((x) => x.name === bn);
+      if (w) w.value = def;
+    }
+    // 重置四段权重 + auto_segment + 各 w_ 为安全默认
+    for (const wn of SEG_WEIGHT_NAMES) {
+      const w = node.widgets?.find((x) => x.name === wn);
+      if (w) w.value = 1.0;
+    }
+    const aw = node.widgets?.find((x) => x.name === "auto_segment");
+    if (aw) aw.value = true;  // 新默认：自动分段开启
+    for (const wn of ["w_self_attn", "w_cross_attn", "w_mlp", "w_adaln"]) {
+      const w = node.widgets?.find((x) => x.name === wn);
+      if (w && (typeof w.value !== "number" || isNaN(w.value))) w.value = 1.0;
+    }
+    console.warn("[Anima LBW] 检测到旧版工作流（参数布局已变更），已将该节点的分段参数重置为默认值。" +
+                 "请重新配置；如需旧版行为，请到 GitHub 历史 commit 下载旧版节点。 | " +
+                 "Detected a legacy workflow; segment params on this node were reset to defaults. " +
+                 "Please reconfigure, or download the old node from GitHub commit history.");
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
 
 // 仅这两个实验节点的标题需要随界面语言中/英切换。
 // 后端 NODE_DISPLAY_NAME_MAPPINGS 是写死的字符串、不会跟语言变，所以这里在前端动态设标题。
@@ -57,6 +113,15 @@ function applyLocalizedTitle(node, nodeName) {
   const known = localizedTitleSet(nodeName);
   if (!node.title || known.includes(node.title)) {
     node.title = isZh() ? e.zh : e.en;
+  }
+}
+// 给可见的原生 widget 设置显示标签（中英切换）。只剩 lora_name 还是原生显示
+// （control_mode/segment_metric 已自绘成箭头行，标签走 makeComboRow 的 t()）。
+const NATIVE_LABEL_KEYS = ["lora_name"];
+function applyNativeLabels(node) {
+  for (const name of NATIVE_LABEL_KEYS) {
+    const w = node.widgets?.find((x) => x.name === name);
+    if (w) w.label = t("lbl_" + name);
   }
 }
 const TOTAL = 28;
@@ -89,6 +154,18 @@ const I18N = {
   refresh: { zh: "刷新",     en: "Refresh" },
   impact:  { zh: "影响力",   en: "impact" },
   verbose: { zh: "verbose (控制台打印)", en: "verbose (console log)" },
+  seg_1:      { zh: "第1段", en: "seg 1" },
+  seg_2:      { zh: "第2段", en: "seg 2" },
+  seg_3:      { zh: "第3段", en: "seg 3" },
+  seg_4:      { zh: "第4段", en: "seg 4" },
+  autoSeg:    { zh: "自动分段 (按指标)", en: "auto-segment (by metric)" },
+  autoHint:   { zh: "自动分段开启中，区间由所选指标决定", en: "auto-segment on; ranges set by chosen metric" },
+  // 原生 widget 的显示标签（中英切换；参数名不变，只改显示）
+  lbl_lora_name:      { zh: "LoRA 文件", en: "lora_name" },
+  lbl_control_mode:   { zh: "控制模式", en: "control_mode" },
+  lbl_segment_metric: { zh: "分段指标", en: "segment_metric" },
+  lbl_strength_model: { zh: "模型强度", en: "strength_model" },
+  lbl_strength_clip:  { zh: "CLIP强度", en: "strength_clip" },
 };
 function t(k) { const e = I18N[k]; return e ? (isZh() ? e.zh : e.en) : k; }
 
@@ -145,9 +222,58 @@ function makeNumStepper(getVal, setVal, { min = 0, max = 2, step = 0.05 } = {}) 
   num.classList.add("anima-no-spin");
   const right = mkArrow("\u25BA", step);
   num.addEventListener("change", () => { let v = parseFloat(num.value); if (isNaN(v)) v = getVal(); v = Math.max(min, Math.min(max, v)); setVal(v); sync(); });
+  // 现代化节点输入体验：聚焦/点击时自动全选，省去用户每次手动全选
+  num.addEventListener("focus", () => { try { num.select(); } catch (e) {} });
+  num.addEventListener("mouseup", (e) => { e.preventDefault(); });  // 防止 mouseup 取消全选
   box.appendChild(left); box.appendChild(num); box.appendChild(right);
   sync();
   return { box, sync };
+}
+
+// ---------- 名称 + [◄][当前选项][►] 的下拉循环行（用于 control_mode / segment_metric）----------
+// 复用 makeNumStepper 的箭头样式；点箭头在该 widget 的选项间循环切换。
+function makeComboRow(node, widgetName, labelKey) {
+  const w = findW(node, widgetName);
+  const row = rowBase();
+  const label = document.createElement("span");
+  label.textContent = t(labelKey);
+  label.style.cssText = "flex:1 1 auto;color:#ddd;font-family:monospace;font-size:11px;user-select:none;";
+
+  // 取该 widget 的候选选项列表。注意不能写 options?.values，
+  // 因为数组本身就有 Array.prototype.values 方法，会被误取成函数。
+  const getOptions = () => {
+    if (!w || !w.options) return [];
+    if (Array.isArray(w.options)) return w.options;            // options 直接是数组
+    if (Array.isArray(w.options.values)) return w.options.values;  // options.values 是数组
+    return [];
+  };
+  const box = document.createElement("div");
+  box.style.cssText = "display:flex;align-items:center;gap:2px;flex:0 0 auto;";
+  const mkArrow = (txt, dir) => {
+    const b = document.createElement("button");
+    b.textContent = txt;
+    b.style.cssText = "width:16px;height:17px;line-height:15px;text-align:center;background:#3a3a3a;color:#ccc;border:1px solid #555;border-radius:3px;cursor:pointer;font-size:10px;padding:0;flex:0 0 auto;";
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      const opts = getOptions();
+      if (!opts.length) return;
+      let i = opts.indexOf(w.value);
+      if (i < 0) i = 0;
+      i = (i + dir + opts.length) % opts.length;  // 循环
+      setW(w, opts[i]);
+      sync();
+    });
+    return b;
+  };
+  const valBox = document.createElement("div");
+  valBox.style.cssText = "flex:0 0 96px;background:#222;color:#fff;border:1px solid #444;border-radius:9px;text-align:center;font-family:monospace;padding:1px 4px;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+  const sync = () => { valBox.textContent = w ? String(w.value) : ""; };
+  const left = mkArrow("\u25C4", -1);
+  const right = mkArrow("\u25BA", +1);
+  box.appendChild(left); box.appendChild(valBox); box.appendChild(right);
+  row.appendChild(label); row.appendChild(box);
+  sync();
+  return { row, sync, widgetName };
 }
 
 function rowBase() {
@@ -161,7 +287,7 @@ function makeStrengthRow(node, widgetName) {
   const w = findW(node, widgetName);
   const row = rowBase();
   const label = document.createElement("span");
-  label.textContent = widgetName;
+  label.textContent = t("lbl_" + widgetName);
   label.style.cssText = "flex:1 1 auto;color:#ddd;font-family:monospace;font-size:11px;user-select:none;";
   const stepper = makeNumStepper(() => (w ? w.value : 1.0), (v) => setW(w, v), { min: -10, max: 10, step: 0.05 });
   row.appendChild(label); row.appendChild(stepper.box);
@@ -214,13 +340,22 @@ function makeRangeRow(node, widgetName) {
   inp.value = w ? w.value : "";
   inp.style.cssText = "flex:0 0 78px;background:#222;color:#fff;border:1px solid #444;border-radius:3px;text-align:center;font-family:monospace;padding:1px 3px;font-size:10px;";
   inp.addEventListener("change", () => { setW(w, inp.value); if (node._applyImpactAgain) node._applyImpactAgain(); });
+  inp.addEventListener("focus", () => { try { inp.select(); } catch (e) {} });
+  inp.addEventListener("mouseup", (e) => { e.preventDefault(); });
   row.appendChild(label); row.appendChild(inp);
   const refresh = () => { inp.value = w ? w.value : ""; };
-  return { row, refresh };
+  // 自动分段开启时把区间框置灰（只读，提示由实测强度决定）
+  const setEnabled = (on) => {
+    inp.disabled = !on;
+    inp.style.opacity = on ? "1" : "0.45";
+    inp.style.cursor = on ? "text" : "not-allowed";
+    label.style.opacity = on ? "1" : "0.55";
+  };
+  return { row, refresh, setEnabled, widgetName };
 }
 
 // ---------- verbose 开关行 ----------
-function makeToggleRow(node, widgetName, labelText) {
+function makeToggleRow(node, widgetName, labelText, onChange) {
   const w = findW(node, widgetName);
   const row = rowBase();
   const chk = document.createElement("input");
@@ -230,10 +365,10 @@ function makeToggleRow(node, widgetName, labelText) {
   const label = document.createElement("span");
   label.textContent = labelText;
   label.style.cssText = "flex:1 1 auto;color:#ddd;font-family:monospace;font-size:11px;user-select:none;";
-  chk.addEventListener("change", () => setW(w, chk.checked));
+  chk.addEventListener("change", () => { setW(w, chk.checked); if (onChange) onChange(chk.checked); });
   row.appendChild(chk); row.appendChild(label);
   const refresh = () => { chk.checked = !!(w && w.value); };
-  return { row, refresh };
+  return { row, refresh, isChecked: () => chk.checked };
 }
 
 function sep() { const d = document.createElement("div"); d.style.cssText = "height:1px;background:#444;margin:3px 0;flex:0 0 auto;"; return d; }
@@ -251,6 +386,16 @@ function buildPanel(node) {
   const wrap = document.createElement("div");
   wrap.style.cssText = "width:100%;display:flex;flex-direction:column;gap:2px;box-sizing:border-box;";
 
+  // control_mode / segment_metric：自绘成 [◄][选项][►] 箭头行（风格统一）
+  node._comboRows = [];
+  [["control_mode", "lbl_control_mode"], ["segment_metric", "lbl_segment_metric"]].forEach(([nm, key]) => {
+    if (!findW(node, nm)) return;
+    const r = makeComboRow(node, nm, key);
+    wrap.appendChild(r.row);
+    node._comboRows.push(r);
+  });
+  if (node._comboRows.length) wrap.appendChild(sep());
+
   // strength（仅加载节点有；导出节点没有则跳过）
   node._strRows = [];
   ["strength_model", "strength_clip"].forEach((nm) => {
@@ -263,10 +408,10 @@ function buildPanel(node) {
   node._segRangeRows = [];
   node._segRows = [];
   const segDefs = [
-    ["seg_motion_blocks", "seg_motion_weight", "seg_motion"],
-    ["seg_proportion_blocks", "seg_proportion_weight", "seg_proportion"],
-    ["seg_core_blocks", "seg_core_weight", "seg_core"],
-    ["seg_detail_blocks", "seg_detail_weight", "seg_detail"],
+    ["seg_1_blocks", "seg_1_weight", t("seg_1")],
+    ["seg_2_blocks", "seg_2_weight", t("seg_2")],
+    ["seg_3_blocks", "seg_3_weight", t("seg_3")],
+    ["seg_4_blocks", "seg_4_weight", t("seg_4")],
   ];
   node._segGroup = document.createElement("div");
   node._segGroup.style.cssText = "display:flex;flex-direction:column;gap:1px;";
@@ -279,7 +424,28 @@ function buildPanel(node) {
     node._segRangeRows.push(rr);
     node._segRows.push(wr);
   });
-  wrap.appendChild(node._segGroup);
+
+  // auto_segment 开关（仅在该 widget 存在时；置灰四个区间框）
+  node._autoSegRow = null;
+  const applyAutoSegState = (on) => {
+    node._segRangeRows.forEach((rr) => rr.setEnabled && rr.setEnabled(!on));
+  };
+  if (findW(node, "auto_segment")) {
+    node._autoSegRow = makeToggleRow(node, "auto_segment", t("autoSeg"), (on) => {
+      applyAutoSegState(on);
+      // 打开时立即触发一次重算（改变输入->后端会重新执行并回传分段）
+    });
+    // 开关行放在四段组上方
+    node._segGroupWrap = document.createElement("div");
+    node._segGroupWrap.style.cssText = "display:flex;flex-direction:column;gap:1px;";
+    node._segGroupWrap.appendChild(node._autoSegRow.row);
+    node._segGroupWrap.appendChild(node._segGroup);
+    wrap.appendChild(node._segGroupWrap);
+    applyAutoSegState(node._autoSegRow.isChecked());
+  } else {
+    wrap.appendChild(node._segGroup);
+  }
+  node._applyAutoSegState = applyAutoSegState;
 
   node._segSep = sep();
   wrap.appendChild(node._segSep);
@@ -327,8 +493,12 @@ function buildPanel(node) {
     const modeW = findW(node, "control_mode");
     const isPB = modeW && modeW.value === "per_block";
     let rows = 0;
+    rows += node._comboRows ? node._comboRows.length : 0;  // control_mode + segment_metric 箭头行
     rows += node._strRows ? node._strRows.length : 0;  // strength（加载节点 2，导出节点 0）
-    if (!isPB) rows += 8;                               // 四段：区间4 + 权重4
+    if (!isPB) {
+      if (node._autoSegRow) rows += 1;                  // auto_segment 开关行（grouped 模式）
+      rows += 8;                                        // 四段：区间4 + 权重4
+    }
     rows += 4;                                          // w_ ×4
     if (node._verboseRow) rows += 1;                    // verbose（仅加载节点）
     let h = rows * (ROW_H + 2) + 4 * 7;
@@ -372,6 +542,7 @@ function restoreImpact(node) {
   return null;
 }
 function refreshAll(node) {
+  node._comboRows?.forEach((r) => r.sync());
   node._strRows?.forEach((r) => r.sync());
   node._segRangeRows?.forEach((r) => r.refresh());
   node._segRows?.forEach((r) => r.refresh());
@@ -381,10 +552,11 @@ function refreshAll(node) {
 }
 
 function toggleMode(node) {
-  // 隐藏所有被接管的原生 widget（只留 lora_name、control_mode）
+  // 隐藏所有被接管的原生 widget（只留 lora_name 原生显示；control_mode/segment_metric 已自绘成箭头行）
   ["strength_model", "strength_clip", "w_self_attn", "w_cross_attn", "w_mlp", "w_adaln",
-   "seg_motion_weight", "seg_proportion_weight", "seg_core_weight", "seg_detail_weight",
-   "seg_motion_blocks", "seg_proportion_blocks", "seg_core_blocks", "seg_detail_blocks",
+   "auto_segment", "control_mode", "segment_metric",
+   "seg_1_weight", "seg_2_weight", "seg_3_weight", "seg_4_weight",
+   "seg_1_blocks", "seg_2_blocks", "seg_3_blocks", "seg_4_blocks",
    "verbose"].forEach((n) => hideWidget(findW(node, n)));
   for (let i = 0; i < TOTAL; i++) hideWidget(findW(node, `blk${String(i).padStart(2, "0")}`));
 
@@ -393,8 +565,9 @@ function toggleMode(node) {
   const modeW = findW(node, "control_mode");
   const isPB = modeW && modeW.value === "per_block";
 
-  // 段组与 per_block 组的显隐
-  if (node._segGroup) node._segGroup.style.display = isPB ? "none" : "flex";
+  // 段组与 per_block 组的显隐（auto 存在时段组被包在 _segGroupWrap 里）
+  const segContainer = node._segGroupWrap || node._segGroup;
+  if (segContainer) segContainer.style.display = isPB ? "none" : "flex";
   if (node._segSep) node._segSep.style.display = isPB ? "none" : "block";
   if (node._pbGroup) node._pbGroup.style.display = isPB ? "flex" : "none";
 
@@ -444,6 +617,7 @@ app.registerExtension({
       const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
       const self = this;
       applyLocalizedTitle(this, nodeData.name);  // 按当前语言设实验节点标题
+      applyNativeLabels(this);                    // 原生 widget 显示标签中英切换
       const modeW = findW(this, "control_mode");
       if (modeW) {
         const orig = modeW.callback;
@@ -464,12 +638,37 @@ app.registerExtension({
     };
 
     const onConfigure = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function () { const r = onConfigure ? onConfigure.apply(this, arguments) : undefined; const self = this; applyLocalizedTitle(this, nodeData.name); setTimeout(() => toggleMode(self), 0); return r; };
+    nodeType.prototype.onConfigure = function () {
+      const r = onConfigure ? onConfigure.apply(this, arguments) : undefined;
+      const self = this;
+      detectAndFixLegacyMisalignment(this);  // 旧工作流错位检测+重置
+      applyLocalizedTitle(this, nodeData.name);
+      applyNativeLabels(this);
+      setTimeout(() => toggleMode(self), 0);
+      return r;
+    };
 
     const onExecuted = nodeType.prototype.onExecuted;
     nodeType.prototype.onExecuted = function (message) {
       const r = onExecuted ? onExecuted.apply(this, arguments) : undefined;
       try { let imp = message?.block_impact; if (Array.isArray(imp) && imp.length && Array.isArray(imp[0])) imp = imp[0]; if (Array.isArray(imp) && imp.length) applyImpact(this, imp); } catch (e) {}
+      // 自动分段：后端回传的四段区间写回到对应区间框并刷新显示
+      try {
+        let seg = message?.auto_segments;
+        if (Array.isArray(seg)) seg = seg[0];
+        if (seg && typeof seg === "object") {
+          let any = false;
+          ["seg_1_blocks", "seg_2_blocks", "seg_3_blocks", "seg_4_blocks"].forEach((bn) => {
+            const key = bn.replace("_blocks", "");  // seg_weak 等
+            const val = seg[key];
+            if (typeof val === "string" && val.length) { setW(findW(this, bn), val); any = true; }
+          });
+          if (any) {
+            this._segRangeRows?.forEach((rr) => rr.refresh());
+            if (this._applyImpactAgain) this._applyImpactAgain();
+          }
+        }
+      } catch (e) {}
       return r;
     };
   },
