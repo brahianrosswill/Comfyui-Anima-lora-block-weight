@@ -17,9 +17,10 @@
 > （中文界面显示 `[实验性]`，英文界面显示 `[Experimental]`）。
 > 如果你手动给节点改过名字，则保留你的命名、不会被覆盖。
 
-**本次更新**：两个实验节点已对齐发布版 V2 的参数体系——grouped 四段
-（seg_motion / proportion / core / detail + 区间可改）、per_block 28 滑块、子模块系数
-（w_self_attn / cross_attn / mlp / adaln 四个子模块系数），并**共享发布版同一界面面板**（含影响力染色）。
+**本次更新**：两个实验节点已对齐发布版的参数体系——grouped 四段
+（seg_1 / seg_2 / seg_3 / seg_4，纯位置编号，区间可改或由自动分段填）、per_block 28 滑块、
+子模块系数（w_self_attn / cross_attn / mlp / adaln），并**共享发布版同一界面面板**
+（含影响力染色、自动分段开关、双分段指标 norm/effective_rank 切换）。
 即不再是旧的 shallow/middle/deep 三档 + 文本框。
 
 ## 为什么 LoKr 要单独处理

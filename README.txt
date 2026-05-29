@@ -27,6 +27,47 @@ Two release nodes (menu category loaders), plus two LoKr experimental nodes (see
 
 ------------------------------------------------------------------------------
 
+Installation
+
+Put the whole folder into ComfyUI's custom_nodes directory, then restart ComfyUI:
+
+
+ComfyUI/custom_nodes/Comfyui-Anima-lora-block-weight/
+
+
+Or clone it there:
+
+
+cd ComfyUI/custom_nodes
+git clone https://github.com/rom0718/Comfyui-Anima-lora-block-weight.git
+
+
+After restart, the nodes appear under the loaders menu category (LoKr experimental nodes under
+loaders/experimental). Dependencies: only ComfyUI's bundled torch / safetensors — no extra packages.
+
+File structure
+
+
+Comfyui-Anima-lora-block-weight/
+├── __init__.py                              Node registration entry (safe-loads the experimental branch)
+├── anima_common.py                          Shared core module (format detect / impact / scaling / auto-segment)
+├── anima_lora_block_weight_v2.py            Release · loader node
+├── anima_lora_block_weight_export.py        Release · export node
+├── web/
+│   └── anima_block_weight.js                Shared frontend panel (unified UI / coloring / EN-ZH switch)
+├── experimental/                            LoKr experimental branch (safe to delete entirely)
+│   ├── __init__.py
+│   ├── anima_lokr_block_weight_experimental.py   LoKr loader + export nodes
+│   └── README.experimental.md
+├── README.md / README.txt                   English docs
+└── 使用说明.zh-CN.md / .txt                 Chinese docs
+
+
+All core logic lives in anima_common.py; all four nodes import from it, keeping the release and
+experimental nodes in sync.
+
+------------------------------------------------------------------------------
+
 An important premise (read first)
 
 Many assume "certain DiT layers always control composition, others always control detail." But per
